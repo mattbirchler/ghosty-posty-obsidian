@@ -17,10 +17,13 @@ export class PublishModal extends Modal {
     private editableTitle: string;
     private editableStatus: PostStatus;
     private editableTags: string;
+    private editableFeatured: boolean = false;
+    private editableScheduledDate: string = '';
 
     // UI elements
     private publishButton: HTMLButtonElement | null = null;
     private statusEl: HTMLElement | null = null;
+    private scheduleDateContainer: HTMLElement | null = null;
 
     constructor(
         app: App,
@@ -74,9 +77,41 @@ export class PublishModal extends Modal {
             .addDropdown(dropdown => dropdown
                 .addOption('draft', 'Draft')
                 .addOption('published', 'Published')
+                .addOption('scheduled', 'Scheduled')
                 .setValue(this.editableStatus)
                 .onChange(value => {
                     this.editableStatus = value as PostStatus;
+                    this.toggleScheduleDateVisibility();
+                }));
+
+        // Schedule date picker (hidden by default)
+        this.scheduleDateContainer = formSection.createDiv({ cls: 'ghosty-posty-schedule-picker' });
+        new Setting(this.scheduleDateContainer)
+            .setName('Schedule for')
+            .setDesc('Date and time to publish (your local timezone)')
+            .addText(text => {
+                text.inputEl.type = 'datetime-local';
+                // Set default to tomorrow at 9am
+                const tomorrow = new Date();
+                tomorrow.setDate(tomorrow.getDate() + 1);
+                tomorrow.setHours(9, 0, 0, 0);
+                const defaultDate = this.toLocalDatetimeString(tomorrow);
+                text.setValue(defaultDate);
+                this.editableScheduledDate = defaultDate;
+                text.onChange(value => {
+                    this.editableScheduledDate = value;
+                });
+            });
+        this.toggleScheduleDateVisibility();
+
+        // Featured toggle
+        new Setting(formSection)
+            .setName('Featured')
+            .setDesc('Mark this post as featured')
+            .addToggle(toggle => toggle
+                .setValue(this.editableFeatured)
+                .onChange(value => {
+                    this.editableFeatured = value;
                 }));
 
         // Tags input
@@ -145,6 +180,31 @@ export class PublishModal extends Modal {
             return date.toLocaleString();
         } catch {
             return isoDate;
+        }
+    }
+
+    /**
+     * Convert a Date to the format required by datetime-local input (YYYY-MM-DDTHH:mm)
+     */
+    private toLocalDatetimeString(date: Date): string {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        const hours = String(date.getHours()).padStart(2, '0');
+        const minutes = String(date.getMinutes()).padStart(2, '0');
+        return `${year}-${month}-${day}T${hours}:${minutes}`;
+    }
+
+    /**
+     * Show/hide the schedule date picker based on status
+     */
+    private toggleScheduleDateVisibility() {
+        if (this.scheduleDateContainer) {
+            if (this.editableStatus === 'scheduled') {
+                this.scheduleDateContainer.style.display = 'block';
+            } else {
+                this.scheduleDateContainer.style.display = 'none';
+            }
         }
     }
 
@@ -291,6 +351,16 @@ export class PublishModal extends Modal {
                 .map(t => t.trim())
                 .filter(t => t.length > 0);
 
+            // Determine published_at date
+            let publishedAt: string | undefined;
+            if (this.editableStatus === 'scheduled' && this.editableScheduledDate) {
+                // Convert local datetime to ISO string
+                const localDate = new Date(this.editableScheduledDate);
+                publishedAt = localDate.toISOString();
+            } else if (this.metadata.publishedAt) {
+                publishedAt = this.metadata.publishedAt;
+            }
+
             const payload: GhostPostPayload = {
                 posts: [{
                     title: this.editableTitle,
@@ -300,8 +370,9 @@ export class PublishModal extends Modal {
                     ...(tags.length > 0 && {
                         tags: tags.map(name => ({ name }))
                     }),
-                    ...(this.metadata.publishedAt && { published_at: this.metadata.publishedAt }),
-                    ...(featureImageUrl && { feature_image: featureImageUrl })
+                    ...(publishedAt && { published_at: publishedAt }),
+                    ...(featureImageUrl && { feature_image: featureImageUrl }),
+                    ...(this.editableFeatured && { featured: true })
                 }]
             };
 

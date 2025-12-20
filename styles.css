@@ -77,6 +77,26 @@
     margin-bottom: 15px;
 }
 
+/* Schedule date picker */
+.ghosty-posty-schedule-picker {
+    background: var(--background-secondary);
+    border-radius: 8px;
+    padding: 0 15px;
+    margin: 8px 0;
+}
+
+.ghosty-posty-schedule-picker .setting-item {
+    border-top: none;
+}
+
+.ghosty-posty-schedule-picker input[type="datetime-local"] {
+    padding: 6px 10px;
+    border-radius: 4px;
+    border: 1px solid var(--background-modifier-border);
+    background: var(--background-primary);
+    color: var(--text-normal);
+}
+
 /* Warnings section */
 .ghosty-posty-warnings {
     background: var(--background-modifier-error);

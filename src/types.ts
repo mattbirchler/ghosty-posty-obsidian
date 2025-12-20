@@ -32,6 +32,7 @@ export interface GhostPost {
     slug?: string;
     published_at?: string;
     feature_image?: string;
+    featured?: boolean;
 }
 
 export interface ImageReference {
