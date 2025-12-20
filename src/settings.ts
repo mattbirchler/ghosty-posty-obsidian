@@ -15,13 +15,9 @@ export class GhostyPostySettingTab extends PluginSettingTab {
         const { containerEl } = this;
         containerEl.empty();
 
-        new Setting(containerEl)
-            .setName('Ghosty Posty Settings')
-            .setHeading();
-
         // Ghost URL setting
         new Setting(containerEl)
-            .setName('Ghost Admin URL')
+            .setName('Ghost admin URL')
             .setDesc('The URL of your Ghost instance (e.g., https://myblog.com)')
             .addText(text => text
                 .setPlaceholder('https://myblog.com')
@@ -33,11 +29,10 @@ export class GhostyPostySettingTab extends PluginSettingTab {
 
         // API Key setting
         new Setting(containerEl)
-            .setName('Admin API Key')
-            .setDesc('Your Ghost Admin API key (found in Ghost Admin → Settings → Integrations)')
+            .setName('Admin API key')
+            .setDesc('Your Ghost admin API key (found in Ghost Admin → Settings → Integrations)')
             .addText(text => {
                 text
-                    .setPlaceholder('id:secret')
                     .setValue(this.plugin.settings.apiKey)
                     .onChange(async (value) => {
                         this.plugin.settings.apiKey = value.trim();
@@ -66,7 +61,7 @@ export class GhostyPostySettingTab extends PluginSettingTab {
             .setName('Test connection')
             .setDesc('Verify your Ghost credentials are working')
             .addButton(button => button
-                .setButtonText('Test Connection')
+                .setButtonText('Test connection')
                 .onClick(async () => {
                     const { ghostUrl, apiKey } = this.plugin.settings;
 
@@ -90,7 +85,7 @@ export class GhostyPostySettingTab extends PluginSettingTab {
                     } catch (error) {
                         new Notice(`Connection failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
                     } finally {
-                        button.setButtonText('Test Connection');
+                        button.setButtonText('Test connection');
                         button.setDisabled(false);
                     }
                 }));
@@ -101,7 +96,7 @@ export class GhostyPostySettingTab extends PluginSettingTab {
             .setHeading();
 
         const helpList = containerEl.createEl('ol');
-        helpList.createEl('li', { text: 'Go to your Ghost Admin panel' });
+        helpList.createEl('li', { text: 'Go to your Ghost admin panel' });
         helpList.createEl('li', { text: 'Navigate to Settings → Integrations' });
         helpList.createEl('li', { text: 'Click "Add custom integration"' });
         helpList.createEl('li', { text: 'Give it a name (e.g., "Obsidian Publisher")' });

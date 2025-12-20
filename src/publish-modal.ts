@@ -119,7 +119,6 @@ export class PublishModal extends Modal {
             .setName('Tags')
             .setDesc('Comma-separated list of tags')
             .addText(text => text
-                .setPlaceholder('blog, tech, tutorial')
                 .setValue(this.editableTags)
                 .onChange(value => {
                     this.editableTags = value;
