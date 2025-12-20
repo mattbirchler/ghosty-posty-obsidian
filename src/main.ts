@@ -1,0 +1,147 @@
+import { Plugin, Notice, TFile } from 'obsidian';
+import { GhostyPostySettings, DEFAULT_SETTINGS, PostMetadata, PostStatus } from './types';
+import { GhostyPostySettingTab } from './settings';
+import { PublishModal } from './publish-modal';
+import { convertMarkdownToHtml } from './markdown-converter';
+
+export default class GhostyPostyPlugin extends Plugin {
+    settings: GhostyPostySettings;
+
+    async onload() {
+        await this.loadSettings();
+
+        // Register the publish command
+        this.addCommand({
+            id: 'publish-to-ghost',
+            name: 'Publish to Ghost',
+            callback: () => this.publishCurrentNote()
+        });
+
+        // Add settings tab
+        this.addSettingTab(new GhostyPostySettingTab(this.app, this));
+    }
+
+    onunload() {
+        // Cleanup if needed
+    }
+
+    async loadSettings() {
+        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    }
+
+    async saveSettings() {
+        await this.saveData(this.settings);
+    }
+
+    /**
+     * Get the currently active markdown file
+     */
+    private getActiveFile(): TFile | null {
+        const activeFile = this.app.workspace.getActiveFile();
+        if (!activeFile) {
+            new Notice('No file is currently open');
+            return null;
+        }
+        if (activeFile.extension !== 'md') {
+            new Notice('The current file is not a markdown file');
+            return null;
+        }
+        return activeFile;
+    }
+
+    /**
+     * Extract post metadata from frontmatter
+     */
+    private getPostMetadata(file: TFile): PostMetadata {
+        const cache = this.app.metadataCache.getFileCache(file);
+        const frontmatter = cache?.frontmatter;
+
+        // Get title from frontmatter or filename
+        const title = frontmatter?.title || file.basename;
+
+        // Get slug from frontmatter
+        const slug = frontmatter?.slug;
+
+        // Get tags from frontmatter
+        let tags: string[] = [];
+        if (frontmatter?.tags) {
+            if (Array.isArray(frontmatter.tags)) {
+                tags = frontmatter.tags.map(String);
+            } else if (typeof frontmatter.tags === 'string') {
+                // Handle comma-separated string
+                tags = frontmatter.tags.split(',').map((t: string) => t.trim());
+            }
+        }
+
+        // Determine status and scheduled date
+        let status: PostStatus = frontmatter?.status || this.settings.defaultStatus;
+        let publishedAt: string | undefined;
+
+        // Check for scheduled publishing
+        const scheduledDate = frontmatter?.publish_date || frontmatter?.date;
+        if (scheduledDate) {
+            const date = new Date(scheduledDate);
+            const now = new Date();
+
+            if (date > now) {
+                // Future date - schedule the post
+                status = 'scheduled';
+                publishedAt = date.toISOString();
+            } else if (status === 'published') {
+                // Past date with published status - use that date
+                publishedAt = date.toISOString();
+            }
+        }
+
+        return {
+            title,
+            slug,
+            tags,
+            status,
+            publishedAt
+        };
+    }
+
+    /**
+     * Main publish workflow
+     */
+    private async publishCurrentNote() {
+        // Check if settings are configured
+        if (!this.settings.ghostUrl || !this.settings.apiKey) {
+            new Notice('Please configure your Ghost credentials in settings first');
+            return;
+        }
+
+        // Get the active file
+        const file = this.getActiveFile();
+        if (!file) {
+            return;
+        }
+
+        try {
+            // Read file content
+            const content = await this.app.vault.read(file);
+
+            // Convert markdown to HTML
+            const conversionResult = convertMarkdownToHtml(content);
+
+            // Get metadata from frontmatter
+            const metadata = this.getPostMetadata(file);
+
+            // Show the confirmation modal
+            new PublishModal(
+                this.app,
+                metadata,
+                conversionResult,
+                this.settings.ghostUrl,
+                this.settings.apiKey,
+                (postUrl: string) => {
+                    // Success callback - could open the post URL
+                    console.log('Post published:', postUrl);
+                }
+            ).open();
+        } catch (error) {
+            new Notice(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+    }
+}

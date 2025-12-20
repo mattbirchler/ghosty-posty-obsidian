@@ -1,0 +1,21 @@
+# Build output
+main.js
+*.js.map
+
+# Dependencies
+node_modules/
+
+# IDE
+.idea/
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# npm
+package-lock.json
+npm-debug.log*
+
+# Test vault
+test-vault/
