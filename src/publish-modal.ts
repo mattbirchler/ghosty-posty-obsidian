@@ -167,7 +167,9 @@ export class PublishModal extends Modal {
             text: 'Publish',
             cls: 'mod-cta'
         });
-        this.publishButton.addEventListener('click', () => this.publish());
+        this.publishButton.addEventListener('click', () => {
+            void this.publish();
+        });
     }
 
     private getFilename(path: string): string {
@@ -201,9 +203,9 @@ export class PublishModal extends Modal {
     private toggleScheduleDateVisibility() {
         if (this.scheduleDateContainer) {
             if (this.editableStatus === 'scheduled') {
-                this.scheduleDateContainer.style.display = 'block';
+                this.scheduleDateContainer.removeClass('is-hidden');
             } else {
-                this.scheduleDateContainer.style.display = 'none';
+                this.scheduleDateContainer.addClass('is-hidden');
             }
         }
     }

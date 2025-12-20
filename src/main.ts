@@ -138,9 +138,8 @@ export default class GhostyPostyPlugin extends Plugin {
                 conversionResult,
                 this.settings.ghostUrl,
                 this.settings.apiKey,
-                (postUrl: string) => {
-                    // Success callback - could open the post URL
-                    console.log('Post published:', postUrl);
+                () => {
+                    // Success callback
                 }
             ).open();
         } catch (error) {

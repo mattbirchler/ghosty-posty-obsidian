@@ -15,7 +15,9 @@ export class GhostyPostySettingTab extends PluginSettingTab {
         const { containerEl } = this;
         containerEl.empty();
 
-        containerEl.createEl('h2', { text: 'Ghosty Posty Settings' });
+        new Setting(containerEl)
+            .setName('Ghosty Posty Settings')
+            .setHeading();
 
         // Ghost URL setting
         new Setting(containerEl)
@@ -94,7 +96,10 @@ export class GhostyPostySettingTab extends PluginSettingTab {
                 }));
 
         // Help section
-        containerEl.createEl('h3', { text: 'How to get your API key' });
+        new Setting(containerEl)
+            .setName('How to get your API key')
+            .setHeading();
+
         const helpList = containerEl.createEl('ol');
         helpList.createEl('li', { text: 'Go to your Ghost Admin panel' });
         helpList.createEl('li', { text: 'Navigate to Settings → Integrations' });

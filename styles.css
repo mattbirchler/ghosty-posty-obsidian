@@ -85,6 +85,10 @@
     margin: 8px 0;
 }
 
+.ghosty-posty-schedule-picker.is-hidden {
+    display: none;
+}
+
 .ghosty-posty-schedule-picker .setting-item {
     border-top: none;
 }
