@@ -17,6 +17,41 @@
     color: var(--text-muted);
 }
 
+/* Form section */
+.ghosty-posty-form {
+    margin-bottom: 15px;
+}
+
+.ghosty-posty-form .setting-item {
+    border-top: none;
+    padding: 8px 0;
+}
+
+.ghosty-posty-form .setting-item:first-child {
+    padding-top: 0;
+}
+
+.ghosty-posty-form .setting-item-name {
+    font-weight: 500;
+}
+
+.ghosty-posty-form input[type="text"] {
+    width: 100%;
+}
+
+/* Images section */
+.ghosty-posty-images {
+    background: var(--background-secondary);
+    border-radius: 8px;
+    padding: 15px;
+    margin-bottom: 15px;
+}
+
+.ghosty-posty-images h3 {
+    margin-top: 0;
+}
+
+/* Legacy preview section (kept for compatibility) */
 .ghosty-posty-preview {
     background: var(--background-secondary);
     border-radius: 8px;
@@ -34,6 +69,15 @@
     margin-right: 5px;
 }
 
+/* Schedule section */
+.ghosty-posty-schedule {
+    background: var(--background-secondary);
+    border-radius: 8px;
+    padding: 15px;
+    margin-bottom: 15px;
+}
+
+/* Warnings section */
 .ghosty-posty-warnings {
     background: var(--background-modifier-error);
     border-radius: 8px;
@@ -57,6 +101,19 @@
     color: var(--text-error);
 }
 
+/* Status/progress area */
+.ghosty-posty-status {
+    min-height: 20px;
+    padding: 10px 0;
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+.ghosty-posty-status:empty {
+    display: none;
+}
+
+/* Buttons */
 .ghosty-posty-buttons {
     display: flex;
     justify-content: flex-end;

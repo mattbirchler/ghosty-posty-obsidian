@@ -1,5 +1,5 @@
 import { requestUrl, RequestUrlResponse } from 'obsidian';
-import { GhostPostPayload, GhostPostResponse, GhostSiteResponse, GhostErrorResponse } from './types';
+import { GhostPostPayload, GhostPostResponse, GhostSiteResponse, GhostErrorResponse, GhostImageUploadResponse } from './types';
 
 /**
  * Convert a hex string to Uint8Array
@@ -177,6 +177,82 @@ export class GhostAPI {
                     success: true,
                     post: data.posts[0]
                 };
+            } else {
+                const errorData = response.json as GhostErrorResponse;
+                return {
+                    success: false,
+                    error: errorData.errors?.[0]?.message || `HTTP ${response.status}`
+                };
+            }
+        } catch (error) {
+            return {
+                success: false,
+                error: error instanceof Error ? error.message : 'Unknown error'
+            };
+        }
+    }
+
+    /**
+     * Upload an image to Ghost
+     */
+    async uploadImage(filename: string, imageData: ArrayBuffer): Promise<{ success: true; url: string } | { success: false; error: string }> {
+        try {
+            const token = await this.getAuthHeader();
+            const url = `${this.ghostUrl}/ghost/api/admin/images/upload/`;
+
+            // Determine content type from filename
+            const ext = filename.split('.').pop()?.toLowerCase() || '';
+            const mimeTypes: Record<string, string> = {
+                'jpg': 'image/jpeg',
+                'jpeg': 'image/jpeg',
+                'png': 'image/png',
+                'gif': 'image/gif',
+                'webp': 'image/webp',
+                'svg': 'image/svg+xml'
+            };
+            const contentType = mimeTypes[ext] || 'application/octet-stream';
+
+            // Create multipart form data manually
+            const boundary = '----GhostyPostyBoundary' + Math.random().toString(36).substring(2);
+
+            // Build the multipart body
+            const header = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${contentType}\r\n\r\n`;
+            const footer = `\r\n--${boundary}--\r\n`;
+
+            // Convert header and footer to Uint8Array
+            const headerBytes = new TextEncoder().encode(header);
+            const footerBytes = new TextEncoder().encode(footer);
+            const imageBytes = new Uint8Array(imageData);
+
+            // Combine all parts
+            const body = new Uint8Array(headerBytes.length + imageBytes.length + footerBytes.length);
+            body.set(headerBytes, 0);
+            body.set(imageBytes, headerBytes.length);
+            body.set(footerBytes, headerBytes.length + imageBytes.length);
+
+            const response = await requestUrl({
+                url,
+                method: 'POST',
+                headers: {
+                    'Authorization': token,
+                    'Content-Type': `multipart/form-data; boundary=${boundary}`
+                },
+                body: body.buffer
+            });
+
+            if (response.status >= 200 && response.status < 300) {
+                const data = response.json as GhostImageUploadResponse;
+                if (data.images && data.images.length > 0) {
+                    return {
+                        success: true,
+                        url: data.images[0].url
+                    };
+                } else {
+                    return {
+                        success: false,
+                        error: 'No image URL returned from Ghost'
+                    };
+                }
             } else {
                 const errorData = response.json as GhostErrorResponse;
                 return {

@@ -31,6 +31,22 @@ export interface GhostPost {
     tags?: GhostTag[];
     slug?: string;
     published_at?: string;
+    feature_image?: string;
+}
+
+export interface ImageReference {
+    originalSyntax: string;
+    path: string;
+    alt: string;
+    isEmbed: boolean;
+    isFirstLine: boolean;
+}
+
+export interface GhostImageUploadResponse {
+    images: Array<{
+        url: string;
+        ref: string;
+    }>;
 }
 
 export interface GhostPostPayload {

@@ -1,18 +1,32 @@
-import { App, Modal, Setting, Notice } from 'obsidian';
-import { PostMetadata, GhostPostPayload, PostStatus } from './types';
+import { App, Modal, Setting, Notice, Vault, TFile, MetadataCache } from 'obsidian';
+import { PostMetadata, GhostPostPayload, PostStatus, ImageReference } from './types';
 import { GhostAPI } from './ghost-api';
-import { ConversionResult } from './markdown-converter';
+import { ConversionResult, replaceImageUrls } from './markdown-converter';
 
 export class PublishModal extends Modal {
     private metadata: PostMetadata;
-    private html: string;
-    private warnings: string[];
+    private conversionResult: ConversionResult;
     private ghostUrl: string;
     private apiKey: string;
+    private vault: Vault;
+    private metadataCache: MetadataCache;
+    private sourceFile: TFile;
     private onSuccess: (postUrl: string) => void;
+
+    // Editable form values
+    private editableTitle: string;
+    private editableStatus: PostStatus;
+    private editableTags: string;
+
+    // UI elements
+    private publishButton: HTMLButtonElement | null = null;
+    private statusEl: HTMLElement | null = null;
 
     constructor(
         app: App,
+        vault: Vault,
+        metadataCache: MetadataCache,
+        sourceFile: TFile,
         metadata: PostMetadata,
         conversionResult: ConversionResult,
         ghostUrl: string,
@@ -20,12 +34,19 @@ export class PublishModal extends Modal {
         onSuccess: (postUrl: string) => void
     ) {
         super(app);
+        this.vault = vault;
+        this.metadataCache = metadataCache;
+        this.sourceFile = sourceFile;
         this.metadata = metadata;
-        this.html = conversionResult.html;
-        this.warnings = conversionResult.warnings;
+        this.conversionResult = conversionResult;
         this.ghostUrl = ghostUrl;
         this.apiKey = apiKey;
         this.onSuccess = onSuccess;
+
+        // Initialize editable values
+        this.editableTitle = metadata.title;
+        this.editableStatus = metadata.status;
+        this.editableTags = metadata.tags.join(', ');
     }
 
     onOpen() {
@@ -35,51 +56,71 @@ export class PublishModal extends Modal {
 
         contentEl.createEl('h2', { text: 'Publish to Ghost' });
 
-        // Metadata preview section
-        const previewSection = contentEl.createDiv({ cls: 'ghosty-posty-preview' });
-        previewSection.createEl('h3', { text: 'Post Details' });
+        // Editable fields section
+        const formSection = contentEl.createDiv({ cls: 'ghosty-posty-form' });
 
-        // Title
-        const titleDiv = previewSection.createDiv({ cls: 'ghosty-posty-field' });
-        titleDiv.createEl('strong', { text: 'Title: ' });
-        titleDiv.createEl('span', { text: this.metadata.title });
+        // Title input
+        new Setting(formSection)
+            .setName('Title')
+            .addText(text => text
+                .setValue(this.editableTitle)
+                .onChange(value => {
+                    this.editableTitle = value;
+                }));
 
-        // Slug (if set)
-        if (this.metadata.slug) {
-            const slugDiv = previewSection.createDiv({ cls: 'ghosty-posty-field' });
-            slugDiv.createEl('strong', { text: 'Slug: ' });
-            slugDiv.createEl('span', { text: this.metadata.slug });
+        // Status dropdown
+        new Setting(formSection)
+            .setName('Status')
+            .addDropdown(dropdown => dropdown
+                .addOption('draft', 'Draft')
+                .addOption('published', 'Published')
+                .setValue(this.editableStatus)
+                .onChange(value => {
+                    this.editableStatus = value as PostStatus;
+                }));
+
+        // Tags input
+        new Setting(formSection)
+            .setName('Tags')
+            .setDesc('Comma-separated list of tags')
+            .addText(text => text
+                .setPlaceholder('blog, tech, tutorial')
+                .setValue(this.editableTags)
+                .onChange(value => {
+                    this.editableTags = value;
+                }));
+
+        // Image info section
+        const totalImages = this.conversionResult.images.length +
+            (this.conversionResult.featuredImage ? 1 : 0);
+
+        if (totalImages > 0 || this.conversionResult.featuredImage) {
+            const imageSection = contentEl.createDiv({ cls: 'ghosty-posty-images' });
+            imageSection.createEl('h3', { text: 'Images' });
+
+            if (this.conversionResult.featuredImage) {
+                const featuredDiv = imageSection.createDiv({ cls: 'ghosty-posty-field' });
+                featuredDiv.createEl('strong', { text: 'Featured image: ' });
+                featuredDiv.createEl('span', { text: this.getFilename(this.conversionResult.featuredImage.path) });
+            }
+
+            if (this.conversionResult.images.length > 0) {
+                const countDiv = imageSection.createDiv({ cls: 'ghosty-posty-field' });
+                countDiv.createEl('strong', { text: 'Content images: ' });
+                countDiv.createEl('span', { text: `${this.conversionResult.images.length}` });
+            }
         }
 
-        // Tags
-        if (this.metadata.tags.length > 0) {
-            const tagsDiv = previewSection.createDiv({ cls: 'ghosty-posty-field' });
-            tagsDiv.createEl('strong', { text: 'Tags: ' });
-            tagsDiv.createEl('span', { text: this.metadata.tags.join(', ') });
-        }
-
-        // Status
-        const statusDiv = previewSection.createDiv({ cls: 'ghosty-posty-field' });
-        statusDiv.createEl('strong', { text: 'Status: ' });
-        const statusText = this.getStatusDisplayText();
-        statusDiv.createEl('span', { text: statusText });
-
-        // Scheduled date (if applicable)
+        // Scheduled date (if applicable from metadata)
         if (this.metadata.status === 'scheduled' && this.metadata.publishedAt) {
-            const dateDiv = previewSection.createDiv({ cls: 'ghosty-posty-field' });
+            const scheduleSection = contentEl.createDiv({ cls: 'ghosty-posty-schedule' });
+            const dateDiv = scheduleSection.createDiv({ cls: 'ghosty-posty-field' });
             dateDiv.createEl('strong', { text: 'Scheduled for: ' });
             dateDiv.createEl('span', { text: this.formatDate(this.metadata.publishedAt) });
         }
 
-        // Warnings section
-        if (this.warnings.length > 0) {
-            const warningsSection = contentEl.createDiv({ cls: 'ghosty-posty-warnings' });
-            warningsSection.createEl('h3', { text: 'Warnings' });
-            const warningsList = warningsSection.createEl('ul');
-            for (const warning of this.warnings) {
-                warningsList.createEl('li', { text: warning });
-            }
-        }
+        // Status/progress area
+        this.statusEl = contentEl.createDiv({ cls: 'ghosty-posty-status' });
 
         // Buttons
         const buttonContainer = contentEl.createDiv({ cls: 'ghosty-posty-buttons' });
@@ -87,24 +128,15 @@ export class PublishModal extends Modal {
         const cancelButton = buttonContainer.createEl('button', { text: 'Cancel' });
         cancelButton.addEventListener('click', () => this.close());
 
-        const publishButton = buttonContainer.createEl('button', {
+        this.publishButton = buttonContainer.createEl('button', {
             text: 'Publish',
             cls: 'mod-cta'
         });
-        publishButton.addEventListener('click', () => this.publish());
+        this.publishButton.addEventListener('click', () => this.publish());
     }
 
-    private getStatusDisplayText(): string {
-        switch (this.metadata.status) {
-            case 'draft':
-                return 'Draft (not visible to readers)';
-            case 'published':
-                return 'Published (visible immediately)';
-            case 'scheduled':
-                return 'Scheduled';
-            default:
-                return this.metadata.status;
-        }
+    private getFilename(path: string): string {
+        return path.split('/').pop() || path;
     }
 
     private formatDate(isoDate: string): string {
@@ -116,30 +148,160 @@ export class PublishModal extends Modal {
         }
     }
 
-    private async publish() {
-        const { contentEl } = this;
+    private setStatus(message: string) {
+        if (this.statusEl) {
+            this.statusEl.textContent = message;
+        }
+    }
 
-        // Show loading state
-        const buttons = contentEl.querySelectorAll('button');
+    private setButtonsEnabled(enabled: boolean) {
+        const buttons = this.contentEl.querySelectorAll('button');
         buttons.forEach(btn => {
-            btn.setAttribute('disabled', 'true');
+            if (enabled) {
+                btn.removeAttribute('disabled');
+            } else {
+                btn.setAttribute('disabled', 'true');
+            }
         });
-        const publishBtn = buttons[buttons.length - 1];
-        publishBtn.textContent = 'Publishing...';
+    }
+
+    /**
+     * Resolve an image path to a TFile
+     */
+    private resolveImagePath(imagePath: string): TFile | null {
+        // Try direct path first
+        const directFile = this.vault.getAbstractFileByPath(imagePath);
+        if (directFile instanceof TFile) {
+            return directFile;
+        }
+
+        // Try using metadata cache for link resolution (handles relative paths)
+        const resolved = this.metadataCache.getFirstLinkpathDest(imagePath, this.sourceFile.path);
+        if (resolved instanceof TFile) {
+            return resolved;
+        }
+
+        // Try relative to source file's folder
+        const sourceFolder = this.sourceFile.parent?.path || '';
+        const relativePath = sourceFolder ? `${sourceFolder}/${imagePath}` : imagePath;
+        const relativeFile = this.vault.getAbstractFileByPath(relativePath);
+        if (relativeFile instanceof TFile) {
+            return relativeFile;
+        }
+
+        return null;
+    }
+
+    /**
+     * Upload all images and return URL mapping
+     */
+    private async uploadImages(
+        api: GhostAPI,
+        images: ImageReference[]
+    ): Promise<{ success: true; urlMap: Map<string, string> } | { success: false; error: string }> {
+        const urlMap = new Map<string, string>();
+
+        for (let i = 0; i < images.length; i++) {
+            const image = images[i];
+            const filename = this.getFilename(image.path);
+
+            this.setStatus(`Uploading image ${i + 1}/${images.length}: ${filename}...`);
+
+            // Resolve the image file
+            const imageFile = this.resolveImagePath(image.path);
+            if (!imageFile) {
+                return {
+                    success: false,
+                    error: `Image not found: ${image.path}`
+                };
+            }
+
+            // Read the image data
+            let imageData: ArrayBuffer;
+            try {
+                imageData = await this.vault.readBinary(imageFile);
+            } catch (err) {
+                return {
+                    success: false,
+                    error: `Failed to read image: ${image.path}`
+                };
+            }
+
+            // Upload to Ghost
+            const result = await api.uploadImage(filename, imageData);
+            if (!result.success) {
+                return {
+                    success: false,
+                    error: `Failed to upload ${filename}: ${result.error}`
+                };
+            }
+
+            urlMap.set(image.path, result.url);
+        }
+
+        return { success: true, urlMap };
+    }
+
+    private async publish() {
+        this.setButtonsEnabled(false);
+        if (this.publishButton) {
+            this.publishButton.textContent = 'Publishing...';
+        }
 
         try {
             const api = new GhostAPI(this.ghostUrl, this.apiKey);
 
+            // Collect all images to upload
+            const allImages: ImageReference[] = [
+                ...(this.conversionResult.featuredImage ? [this.conversionResult.featuredImage] : []),
+                ...this.conversionResult.images
+            ];
+
+            let html = this.conversionResult.html;
+            let featureImageUrl: string | undefined;
+
+            // Upload images if there are any
+            if (allImages.length > 0) {
+                const uploadResult = await this.uploadImages(api, allImages);
+
+                if (!uploadResult.success) {
+                    new Notice(`Error: ${uploadResult.error}`);
+                    this.setStatus(`Error: ${uploadResult.error}`);
+                    this.setButtonsEnabled(true);
+                    if (this.publishButton) {
+                        this.publishButton.textContent = 'Publish';
+                    }
+                    return;
+                }
+
+                // Get featured image URL
+                if (this.conversionResult.featuredImage) {
+                    featureImageUrl = uploadResult.urlMap.get(this.conversionResult.featuredImage.path);
+                }
+
+                // Replace image paths in HTML
+                html = replaceImageUrls(html, uploadResult.urlMap);
+            }
+
+            this.setStatus('Creating post...');
+
+            // Parse tags from comma-separated string
+            const tags = this.editableTags
+                .split(',')
+                .map(t => t.trim())
+                .filter(t => t.length > 0);
+
             const payload: GhostPostPayload = {
                 posts: [{
-                    title: this.metadata.title,
-                    html: this.html,
-                    status: this.metadata.status,
+                    title: this.editableTitle,
+                    html: html,
+                    status: this.editableStatus,
                     ...(this.metadata.slug && { slug: this.metadata.slug }),
-                    ...(this.metadata.tags.length > 0 && {
-                        tags: this.metadata.tags.map(name => ({ name }))
+                    ...(tags.length > 0 && {
+                        tags: tags.map(name => ({ name }))
                     }),
-                    ...(this.metadata.publishedAt && { published_at: this.metadata.publishedAt })
+                    ...(this.metadata.publishedAt && { published_at: this.metadata.publishedAt }),
+                    ...(featureImageUrl && { feature_image: featureImageUrl })
                 }]
             };
 
@@ -151,19 +313,20 @@ export class PublishModal extends Modal {
                 this.close();
             } else {
                 new Notice(`Failed to publish: ${result.error}`);
-                // Re-enable buttons
-                buttons.forEach(btn => {
-                    btn.removeAttribute('disabled');
-                });
-                publishBtn.textContent = 'Publish';
+                this.setStatus(`Error: ${result.error}`);
+                this.setButtonsEnabled(true);
+                if (this.publishButton) {
+                    this.publishButton.textContent = 'Publish';
+                }
             }
         } catch (error) {
-            new Notice(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
-            // Re-enable buttons
-            buttons.forEach(btn => {
-                btn.removeAttribute('disabled');
-            });
-            publishBtn.textContent = 'Publish';
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            new Notice(`Error: ${errorMessage}`);
+            this.setStatus(`Error: ${errorMessage}`);
+            this.setButtonsEnabled(true);
+            if (this.publishButton) {
+                this.publishButton.textContent = 'Publish';
+            }
         }
     }
 

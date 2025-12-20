@@ -131,6 +131,9 @@ export default class GhostyPostyPlugin extends Plugin {
             // Show the confirmation modal
             new PublishModal(
                 this.app,
+                this.app.vault,
+                this.app.metadataCache,
+                file,
                 metadata,
                 conversionResult,
                 this.settings.ghostUrl,
