@@ -107,10 +107,13 @@ function convertWikiLinks(markdown: string): string {
  * Convert Obsidian image embeds to standard markdown syntax
  * ![[image.png]] -> ![](image.png)
  * ![[image.png|alt text]] -> ![alt text](image.png)
+ * Paths with spaces are URL-encoded so markdown parsers handle them correctly
  */
 function convertImageEmbeds(markdown: string): string {
     return markdown.replace(/!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, path, alt) => {
-        return `![${alt || ''}](${path})`;
+        // URL-encode the path to handle spaces and special characters
+        const encodedPath = encodeURI(path);
+        return `![${alt || ''}](${encodedPath})`;
     });
 }
 
@@ -195,11 +198,16 @@ export function replaceImageUrls(html: string, urlMap: Map<string, string>): str
     let result = html;
 
     for (const [localPath, ghostUrl] of urlMap) {
-        // Escape special regex characters in the path
-        const escapedPath = localPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        // Replace in src attributes
-        const regex = new RegExp(`src=["']${escapedPath}["']`, 'g');
-        result = result.replace(regex, `src="${ghostUrl}"`);
+        // Try both the original path and URL-encoded version
+        const pathVariants = [localPath, encodeURI(localPath)];
+
+        for (const pathVariant of pathVariants) {
+            // Escape special regex characters in the path
+            const escapedPath = pathVariant.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            // Replace in src attributes
+            const regex = new RegExp(`src=["']${escapedPath}["']`, 'g');
+            result = result.replace(regex, `src="${ghostUrl}"`);
+        }
     }
 
     return result;
