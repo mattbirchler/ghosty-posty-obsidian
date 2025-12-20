@@ -3,7 +3,7 @@
   "name": "Ghosty Posty",
   "version": "1.0.0",
   "minAppVersion": "1.0.0",
-  "description": "Publish your Obsidian notes directly to a Ghost blog",
+  "description": "Post your notes to your Ghost blog.",
   "author": "Ghosty Posty",
   "authorUrl": "",
   "isDesktopOnly": false
