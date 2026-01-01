@@ -99,7 +99,7 @@ export class GhostyPostySettingTab extends PluginSettingTab {
         helpList.createEl('li', { text: 'Go to your ghost admin panel' });
         helpList.createEl('li', { text: 'Navigate to settings → integrations' });
         helpList.createEl('li', { text: 'Click "add custom integration"' });
-        helpList.createEl('li', { text: 'Give it a name (e.g., "obsidian publisher")' });
-        helpList.createEl('li', { text: 'Copy the "admin API Key" (format: id:secret)' });
+        helpList.createEl('li', { text: 'Give it a name (example: "publish to blog")' });
+        helpList.createEl('li', { text: 'Copy the "admin API key" (format: id:secret)' });
     }
 }
