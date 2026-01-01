@@ -57,7 +57,7 @@ export class PublishModal extends Modal {
         contentEl.empty();
         contentEl.addClass('ghosty-posty-modal');
 
-        contentEl.createEl('h2', { text: 'Publish to Ghost' });
+        contentEl.createEl('h2', { text: 'Publish to ghost' });
 
         // Editable fields section
         const formSection = contentEl.createDiv({ cls: 'ghosty-posty-form' });

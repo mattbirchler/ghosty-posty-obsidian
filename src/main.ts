@@ -13,7 +13,7 @@ export default class GhostyPostyPlugin extends Plugin {
         // Register the publish command
         this.addCommand({
             id: 'publish-to-ghost',
-            name: 'Publish to Ghost',
+            name: 'Publish to ghost',
             callback: () => this.publishCurrentNote()
         });
 
@@ -43,7 +43,7 @@ export default class GhostyPostyPlugin extends Plugin {
             return null;
         }
         if (activeFile.extension !== 'md') {
-            new Notice('The current file is not a markdown file');
+            new Notice('The current file is not a .md file');
             return null;
         }
         return activeFile;
@@ -108,7 +108,7 @@ export default class GhostyPostyPlugin extends Plugin {
     private async publishCurrentNote() {
         // Check if settings are configured
         if (!this.settings.ghostUrl || !this.settings.apiKey) {
-            new Notice('Please configure your Ghost credentials in settings first');
+            new Notice('Please configure your ghost credentials in settings first');
             return;
         }
 

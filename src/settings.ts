@@ -18,7 +18,7 @@ export class GhostyPostySettingTab extends PluginSettingTab {
         // Ghost URL setting
         new Setting(containerEl)
             .setName('Ghost admin URL')
-            .setDesc('The URL of your Ghost instance (e.g., https://myblog.com)')
+            .setDesc('The URL of your ghost instance (e.g., https://myblog.com)')
             .addText(text => text
                 .setPlaceholder('https://myblog.com')
                 .setValue(this.plugin.settings.ghostUrl)
@@ -30,7 +30,7 @@ export class GhostyPostySettingTab extends PluginSettingTab {
         // API Key setting
         new Setting(containerEl)
             .setName('Admin API key')
-            .setDesc('Your Ghost admin API key (found in Ghost Admin → Settings → Integrations)')
+            .setDesc('Your ghost admin API key (found in ghost admin → settings → integrations)')
             .addText(text => {
                 text
                     .setValue(this.plugin.settings.apiKey)
@@ -59,14 +59,14 @@ export class GhostyPostySettingTab extends PluginSettingTab {
         // Test connection button
         new Setting(containerEl)
             .setName('Test connection')
-            .setDesc('Verify your Ghost credentials are working')
+            .setDesc('Verify your ghost credentials are working')
             .addButton(button => button
                 .setButtonText('Test connection')
                 .onClick(async () => {
                     const { ghostUrl, apiKey } = this.plugin.settings;
 
                     if (!ghostUrl || !apiKey) {
-                        new Notice('Please enter your Ghost URL and API key first');
+                        new Notice('Please enter your ghost URL and API key first');
                         return;
                     }
 
@@ -96,10 +96,10 @@ export class GhostyPostySettingTab extends PluginSettingTab {
             .setHeading();
 
         const helpList = containerEl.createEl('ol');
-        helpList.createEl('li', { text: 'Go to your Ghost admin panel' });
-        helpList.createEl('li', { text: 'Navigate to Settings → Integrations' });
-        helpList.createEl('li', { text: 'Click "Add custom integration"' });
-        helpList.createEl('li', { text: 'Give it a name (e.g., "Obsidian Publisher")' });
-        helpList.createEl('li', { text: 'Copy the "Admin API Key" (format: id:secret)' });
+        helpList.createEl('li', { text: 'Go to your ghost admin panel' });
+        helpList.createEl('li', { text: 'Navigate to settings → integrations' });
+        helpList.createEl('li', { text: 'Click "add custom integration"' });
+        helpList.createEl('li', { text: 'Give it a name (e.g., "obsidian publisher")' });
+        helpList.createEl('li', { text: 'Copy the "admin API Key" (format: id:secret)' });
     }
 }
