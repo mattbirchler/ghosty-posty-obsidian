@@ -100,6 +100,6 @@ export class GhostyPostySettingTab extends PluginSettingTab {
         helpList.createEl('li', { text: 'Navigate to settings → integrations' });
         helpList.createEl('li', { text: 'Click "add custom integration"' });
         helpList.createEl('li', { text: 'Give it a name (example: "publish to blog")' });
-        helpList.createEl('li', { text: 'Copy the "admin API key" (format: id:secret)' });
+        helpList.createEl('li', { text: 'Copy the admin key' });
     }
 }

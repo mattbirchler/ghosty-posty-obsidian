@@ -281,7 +281,7 @@ export class PublishModal extends Modal {
             let imageData: ArrayBuffer;
             try {
                 imageData = await this.vault.readBinary(imageFile);
-            } catch (err) {
+            } catch {
                 return {
                     success: false,
                     error: `Failed to read image: ${image.path}`
