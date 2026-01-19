@@ -140,7 +140,7 @@ export default class GhostyPostyPlugin extends Plugin {
                 this.settings.apiKey,
                 () => {
                     // Success callback - archive the note if configured
-                    this.archiveNote(file);
+                    void this.archiveNote(file);
                 }
             ).open();
         } catch (error) {
