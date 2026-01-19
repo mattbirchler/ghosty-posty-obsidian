@@ -63,7 +63,7 @@ export class GhostyPostySettingTab extends PluginSettingTab {
             .setDesc('Move notes to this folder after successful publishing (leave empty to disable)')
             .addText(text => {
                 text
-                    .setPlaceholder('Example: Published')
+                    .setPlaceholder('')
                     .setValue(this.plugin.settings.archiveFolder)
                     .onChange(async (value) => {
                         this.plugin.settings.archiveFolder = value.trim();
