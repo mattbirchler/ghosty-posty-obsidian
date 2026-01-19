@@ -139,11 +139,50 @@ export default class GhostyPostyPlugin extends Plugin {
                 this.settings.ghostUrl,
                 this.settings.apiKey,
                 () => {
-                    // Success callback
+                    // Success callback - archive the note if configured
+                    this.archiveNote(file);
                 }
             ).open();
         } catch (error) {
             new Notice(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+    }
+
+    /**
+     * Archive the note by moving it to the configured archive folder
+     */
+    private async archiveNote(file: TFile): Promise<void> {
+        const archiveFolder = this.settings.archiveFolder;
+
+        // Skip if no archive folder is configured
+        if (!archiveFolder) {
+            return;
+        }
+
+        try {
+            // Create the archive folder if it doesn't exist
+            const folderExists = this.app.vault.getAbstractFileByPath(archiveFolder);
+            if (!folderExists) {
+                await this.app.vault.createFolder(archiveFolder);
+            }
+
+            // Determine the new path
+            let newPath = `${archiveFolder}/${file.name}`;
+
+            // Handle filename collision by adding timestamp
+            const existingFile = this.app.vault.getAbstractFileByPath(newPath);
+            if (existingFile) {
+                const timestamp = Date.now();
+                const baseName = file.basename;
+                const extension = file.extension;
+                newPath = `${archiveFolder}/${baseName}-${timestamp}.${extension}`;
+            }
+
+            // Move the file using fileManager to update links automatically
+            await this.app.fileManager.renameFile(file, newPath);
+            new Notice(`Note archived to ${archiveFolder}`);
+        } catch (error) {
+            new Notice(`Failed to archive note: ${error instanceof Error ? error.message : 'Unknown error'}`);
         }
     }
 }

@@ -2,6 +2,7 @@ import { App, PluginSettingTab, Setting, Notice } from 'obsidian';
 import type GhostyPostyPlugin from './main';
 import { GhostAPI } from './ghost-api';
 import { PostStatus } from './types';
+import { FolderSuggest } from './folder-suggest';
 
 export class GhostyPostySettingTab extends PluginSettingTab {
     plugin: GhostyPostyPlugin;
@@ -55,6 +56,22 @@ export class GhostyPostySettingTab extends PluginSettingTab {
                     this.plugin.settings.defaultStatus = value as PostStatus;
                     await this.plugin.saveSettings();
                 }));
+
+        // Archive folder setting
+        new Setting(containerEl)
+            .setName('Archive folder')
+            .setDesc('Move notes to this folder after successful publishing (leave empty to disable)')
+            .addText(text => {
+                text
+                    .setPlaceholder('Example: Published')
+                    .setValue(this.plugin.settings.archiveFolder)
+                    .onChange(async (value) => {
+                        this.plugin.settings.archiveFolder = value.trim();
+                        await this.plugin.saveSettings();
+                    });
+                new FolderSuggest(this.app, text.inputEl);
+                return text;
+            });
 
         // Test connection button
         new Setting(containerEl)

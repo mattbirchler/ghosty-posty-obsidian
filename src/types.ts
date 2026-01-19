@@ -4,12 +4,14 @@ export interface GhostyPostySettings {
     ghostUrl: string;
     apiKey: string;
     defaultStatus: PostStatus;
+    archiveFolder: string;
 }
 
 export const DEFAULT_SETTINGS: GhostyPostySettings = {
     ghostUrl: '',
     apiKey: '',
-    defaultStatus: 'draft'
+    defaultStatus: 'draft',
+    archiveFolder: ''
 };
 
 export interface PostMetadata {
