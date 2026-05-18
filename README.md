@@ -26,6 +26,12 @@ Control your posts with YAML frontmatter:
 - `status`: `draft`, `published`, or `scheduled`
 - `publish_date` or `date`: Schedule future publishing
 
+### Archive After Publishing
+- **Optional Archive Folder**: Automatically move notes to a designated folder after a successful publish
+- **Folder Autocomplete**: Suggests existing folders as you type
+- **Auto-Creates Folders**: Creates the archive folder if it doesn't exist
+- **Collision Safe**: Appends a timestamp if a file with the same name is already in the archive
+
 ### Cross-Platform
 Works on Obsidian Desktop (Mac, Windows, Linux) and Mobile (iOS, Android).
 
@@ -61,7 +67,8 @@ Works on Obsidian Desktop (Mac, Windows, Linux) and Mobile (iOS, Android).
 3. Enter your **Ghost Admin URL** (e.g., `https://yourblog.com`)
 4. Paste your **Admin API Key**
 5. Choose your **Default post status** (Draft recommended)
-6. Click **Test Connection** to verify
+6. *(Optional)* Set an **Archive folder** to automatically move notes after they're published — leave empty to disable
+7. Click **Test Connection** to verify
 
 ## Usage
 
@@ -116,6 +123,15 @@ Your content here...
 **Scheduled:** Choose a future date and time to automatically publish (uses your local timezone)
 
 **Featured:** Mark the post as featured on your Ghost site
+
+### Archiving Published Notes
+
+If you set an **Archive folder** in settings, notes are automatically moved there after a successful publish:
+
+- Leave the setting empty to keep notes in place after publishing
+- The folder is created automatically if it doesn't exist
+- If a file with the same name already exists in the archive, a timestamp is appended to avoid overwriting
+- Internal links to the note are updated automatically when it's moved
 
 ## Tips
 
