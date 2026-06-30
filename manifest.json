@@ -1,7 +1,7 @@
 {
   "id": "ghosty-posty",
   "name": "Ghosty Posty",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "minAppVersion": "1.0.0",
   "description": "Post your notes to your Ghost blog.",
   "author": "Ghosty Posty",
