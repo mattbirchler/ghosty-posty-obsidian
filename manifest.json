@@ -2,7 +2,7 @@
   "id": "ghosty-posty",
   "name": "Ghosty Posty",
   "version": "1.0.2",
-  "minAppVersion": "1.0.0",
+  "minAppVersion": "1.4.10",
   "description": "Post your notes to your Ghost blog.",
   "author": "Ghosty Posty",
   "authorUrl": "",
