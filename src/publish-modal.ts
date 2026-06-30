@@ -91,11 +91,10 @@ export class PublishModal extends Modal {
             .setDesc('Date and time to publish (your local timezone)')
             .addText(text => {
                 text.inputEl.type = 'datetime-local';
-                // Set default to tomorrow at 9am
-                const tomorrow = new Date();
-                tomorrow.setDate(tomorrow.getDate() + 1);
-                tomorrow.setHours(9, 0, 0, 0);
-                const defaultDate = this.toLocalDatetimeString(tomorrow);
+                // Set default to the next hour today (e.g. 2:30pm -> 3:00pm)
+                const nextHour = new Date();
+                nextHour.setHours(nextHour.getHours() + 1, 0, 0, 0);
+                const defaultDate = this.toLocalDatetimeString(nextHour);
                 text.setValue(defaultDate);
                 this.editableScheduledDate = defaultDate;
                 text.onChange(value => {
