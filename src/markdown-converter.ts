@@ -1,5 +1,50 @@
-import Showdown from 'showdown';
+import { Marked } from 'marked';
+import { markedEmoji } from 'marked-emoji';
+import { gemoji } from 'gemoji';
 import { ImageReference } from './types';
+
+/**
+ * Escape a string for safe use inside a double-quoted HTML attribute
+ */
+function escapeHtmlAttribute(value: string): string {
+    return value
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+/**
+ * Build the Markdown-to-HTML converter, configured to match Ghost's needs:
+ * GFM (tables, task lists, strikethrough, fenced code blocks), emoji
+ * shortcodes, and links that open in a new window.
+ */
+function createConverter(): Marked {
+    // Map :shortcode: names to emoji characters (GitHub's emoji set)
+    const emojis: Record<string, string> = {};
+    for (const entry of gemoji) {
+        for (const name of entry.names) {
+            emojis[name] = entry.emoji;
+        }
+    }
+
+    const converter = new Marked();
+    converter.use(markedEmoji({ emojis, renderer: (token) => token.emoji }));
+    converter.use({
+        gfm: true,
+        breaks: false,
+        renderer: {
+            link({ href, title, tokens }): string {
+                const text = this.parser.parseInline(tokens);
+                const titleAttr = title ? ` title="${escapeHtmlAttribute(title)}"` : '';
+                return `<a href="${escapeHtmlAttribute(href)}"${titleAttr} target="_blank" rel="noopener noreferrer">${text}</a>`;
+            }
+        }
+    });
+    return converter;
+}
+
+const markdownConverter = createConverter();
 
 /**
  * Remove YAML frontmatter from markdown content
@@ -98,7 +143,7 @@ function extractAllImages(markdown: string): ImageReference[] {
  * [[Page Name|Display Text]] -> Display Text
  */
 function convertWikiLinks(markdown: string): string {
-    return markdown.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, link, display) => {
+    return markdown.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_match: string, link: string, display: string | undefined) => {
         return display || link;
     });
 }
@@ -110,7 +155,7 @@ function convertWikiLinks(markdown: string): string {
  * Paths with spaces are URL-encoded so markdown parsers handle them correctly
  */
 function convertImageEmbeds(markdown: string): string {
-    return markdown.replace(/!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, path, alt) => {
+    return markdown.replace(/!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_match: string, path: string, alt: string | undefined) => {
         // URL-encode the path to handle spaces and special characters
         const encodedPath = encodeURI(path);
         return `![${alt || ''}](${encodedPath})`;
@@ -169,19 +214,8 @@ export function convertMarkdownToHtml(markdown: string): ConversionResult {
     // Convert wiki links to plain text
     processed = convertWikiLinks(processed);
 
-    // Convert to HTML using Showdown
-    const converter = new Showdown.Converter({
-        tables: true,
-        tasklists: true,
-        strikethrough: true,
-        ghCodeBlocks: true,
-        emoji: true,
-        simpleLineBreaks: false,
-        openLinksInNewWindow: true,
-        headerLevelStart: 1
-    });
-
-    const html = converter.makeHtml(processed);
+    // Convert to HTML using marked
+    const html = markdownConverter.parse(processed, { async: false });
 
     return {
         html,

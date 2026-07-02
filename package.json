@@ -17,12 +17,13 @@
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^20.10.0",
-    "@types/showdown": "^2.0.6",
-    "esbuild": "^0.19.0",
+    "esbuild": "^0.28.1",
     "obsidian": "latest",
     "typescript": "^5.3.0"
   },
   "dependencies": {
-    "showdown": "2.1.0"
+    "gemoji": "^8.1.0",
+    "marked": "^18.0.5",
+    "marked-emoji": "^2.0.3"
   }
 }

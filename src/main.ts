@@ -26,7 +26,8 @@ export default class GhostyPostyPlugin extends Plugin {
     }
 
     async loadSettings() {
-        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+        const data = (await this.loadData()) as Partial<GhostyPostySettings> | null;
+        this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
     }
 
     async saveSettings() {
@@ -54,32 +55,35 @@ export default class GhostyPostyPlugin extends Plugin {
      */
     private getPostMetadata(file: TFile): PostMetadata {
         const cache = this.app.metadataCache.getFileCache(file);
-        const frontmatter = cache?.frontmatter;
+        const frontmatter: Record<string, unknown> = cache?.frontmatter ?? {};
 
         // Get title from frontmatter or filename
-        const title = frontmatter?.title || file.basename;
+        const title = typeof frontmatter.title === 'string' && frontmatter.title !== ''
+            ? frontmatter.title
+            : file.basename;
 
         // Get slug from frontmatter
-        const slug = frontmatter?.slug;
+        const slug = typeof frontmatter.slug === 'string' ? frontmatter.slug : undefined;
 
         // Get tags from frontmatter
         let tags: string[] = [];
-        if (frontmatter?.tags) {
-            if (Array.isArray(frontmatter.tags)) {
-                tags = frontmatter.tags.map(String);
-            } else if (typeof frontmatter.tags === 'string') {
-                // Handle comma-separated string
-                tags = frontmatter.tags.split(',').map((t: string) => t.trim());
-            }
+        if (Array.isArray(frontmatter.tags)) {
+            tags = frontmatter.tags.map(String);
+        } else if (typeof frontmatter.tags === 'string') {
+            // Handle comma-separated string
+            tags = frontmatter.tags.split(',').map((t) => t.trim());
         }
 
         // Determine status and scheduled date
-        let status: PostStatus = frontmatter?.status || this.settings.defaultStatus;
+        const rawStatus = frontmatter.status;
+        let status: PostStatus = rawStatus === 'draft' || rawStatus === 'published' || rawStatus === 'scheduled'
+            ? rawStatus
+            : this.settings.defaultStatus;
         let publishedAt: string | undefined;
 
         // Check for scheduled publishing
-        const scheduledDate = frontmatter?.publish_date || frontmatter?.date;
-        if (scheduledDate) {
+        const scheduledDate = frontmatter.publish_date ?? frontmatter.date;
+        if (typeof scheduledDate === 'string' || typeof scheduledDate === 'number' || scheduledDate instanceof Date) {
             const date = new Date(scheduledDate);
             const now = new Date();
 
