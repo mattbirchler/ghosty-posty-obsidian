@@ -11,9 +11,9 @@ test('frontmatter keys are stable', () => {
     assert.equal(FRONTMATTER_KEYS.updatedAt, 'ghost_updated_at');
 });
 
-test('default settings are sensibly initialised', () => {
+test('default settings exclude the API key so it cannot be persisted', () => {
     assert.equal(DEFAULT_SETTINGS.ghostUrl, '');
-    assert.equal(DEFAULT_SETTINGS.apiKey, '');
+    assert.equal('apiKey' in DEFAULT_SETTINGS, false);
     assert.equal(DEFAULT_SETTINGS.archiveFolder, '');
     // Draft-by-default protects users from accidentally publishing live.
     assert.equal(DEFAULT_SETTINGS.defaultStatus, 'draft');
