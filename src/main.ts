@@ -15,8 +15,11 @@ import { SyncModal } from './sync-modal';
 import { GhostAPI } from './ghost-api';
 import { convertMarkdownToHtml } from './markdown-converter';
 
+const API_KEY_SECRET_ID = 'ghosty-posty-admin-api-key';
+
 export default class GhostyPostyPlugin extends Plugin {
     settings: GhostyPostySettings;
+    private apiKey = '';
 
     async onload() {
         await this.loadSettings();
@@ -81,12 +84,23 @@ export default class GhostyPostyPlugin extends Plugin {
     }
 
     async loadSettings() {
-        const data = (await this.loadData()) as Partial<GhostyPostySettings> | null;
+        const data = (await this.loadData()) as (Partial<GhostyPostySettings> & { apiKey?: string }) | null;
+        if (data) delete data.apiKey;
         this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
+        this.apiKey = this.app.secretStorage.getSecret(API_KEY_SECRET_ID) ?? '';
     }
 
     async saveSettings() {
         await this.saveData(this.settings);
+    }
+
+    getApiKey(): string {
+        return this.apiKey;
+    }
+
+    setApiKey(apiKey: string): void {
+        this.app.secretStorage.setSecret(API_KEY_SECRET_ID, apiKey);
+        this.apiKey = apiKey;
     }
 
     /**
@@ -219,7 +233,8 @@ export default class GhostyPostyPlugin extends Plugin {
      */
     private async publishNote(file: TFile) {
         // Check if settings are configured
-        if (!this.settings.ghostUrl || !this.settings.apiKey) {
+        const apiKey = this.getApiKey();
+        if (!this.settings.ghostUrl || !apiKey) {
             new Notice('Please configure your Ghost credentials in settings first');
             return;
         }
@@ -248,7 +263,7 @@ export default class GhostyPostyPlugin extends Plugin {
                 metadata,
                 conversionResult,
                 this.settings.ghostUrl,
-                this.settings.apiKey,
+                apiKey,
                 (post, wasCreate) => {
                     void this.onPublishSuccess(file, post, wasCreate);
                 }
@@ -289,7 +304,8 @@ export default class GhostyPostyPlugin extends Plugin {
      * Pull the latest version of a published note from Ghost back into the vault.
      */
     private async syncNote(file: TFile) {
-        if (!this.settings.ghostUrl || !this.settings.apiKey) {
+        const apiKey = this.getApiKey();
+        if (!this.settings.ghostUrl || !apiKey) {
             new Notice('Please configure your Ghost credentials in settings first');
             return;
         }
@@ -300,7 +316,7 @@ export default class GhostyPostyPlugin extends Plugin {
             return;
         }
 
-        const api = new GhostAPI(this.settings.ghostUrl, this.settings.apiKey);
+        const api = new GhostAPI(this.settings.ghostUrl, apiKey);
         const result = await api.getPost(ref.id);
         if (!result.success) {
             new Notice(`Failed to fetch post from Ghost: ${result.error}`);

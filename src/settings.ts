@@ -34,10 +34,9 @@ export class GhostyPostySettingTab extends PluginSettingTab {
             .setDesc('Your Ghost admin API key (found in Ghost admin → settings → integrations)')
             .addText(text => {
                 text
-                    .setValue(this.plugin.settings.apiKey)
-                    .onChange(async (value) => {
-                        this.plugin.settings.apiKey = value.trim();
-                        await this.plugin.saveSettings();
+                    .setValue(this.plugin.getApiKey())
+                    .onChange((value) => {
+                        this.plugin.setApiKey(value.trim());
                     });
                 // Make the input look like a password field
                 text.inputEl.type = 'password';
@@ -80,7 +79,8 @@ export class GhostyPostySettingTab extends PluginSettingTab {
             .addButton(button => button
                 .setButtonText('Test connection')
                 .onClick(async () => {
-                    const { ghostUrl, apiKey } = this.plugin.settings;
+                    const { ghostUrl } = this.plugin.settings;
+                    const apiKey = this.plugin.getApiKey();
 
                     if (!ghostUrl || !apiKey) {
                         new Notice('Please enter your ghost URL and API key first');

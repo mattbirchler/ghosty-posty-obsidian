@@ -8,14 +8,12 @@ export type DeliveryMode = 'post' | 'post_and_newsletter' | 'newsletter_only';
 
 export interface GhostyPostySettings {
     ghostUrl: string;
-    apiKey: string;
     defaultStatus: PostStatus;
     archiveFolder: string;
 }
 
 export const DEFAULT_SETTINGS: GhostyPostySettings = {
     ghostUrl: '',
-    apiKey: '',
     defaultStatus: 'draft',
     archiveFolder: ''
 };
