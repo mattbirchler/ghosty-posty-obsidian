@@ -1,4 +1,4 @@
-import { Plugin, Notice, TFile, Menu, Editor, MarkdownView, htmlToMarkdown } from 'obsidian';
+import { Plugin, Notice, TFile, Menu, Editor, MarkdownView, debounce, htmlToMarkdown, setTooltip } from 'obsidian';
 import {
     GhostyPostySettings,
     DEFAULT_SETTINGS,
@@ -16,7 +16,7 @@ import { SyncModal } from './sync-modal';
 import { GhostAPI } from './ghost-api';
 import { ImageMemory } from './image-list';
 import { convertMarkdownToHtml, stripFrontmatter } from './markdown-converter';
-import { editorUrl, hashContent, shouldArchive, successMessage } from './publish-logic';
+import { SyncState, editorUrl, hashContent, shouldArchive, statusBarText, successMessage } from './publish-logic';
 
 /**
  * Things the plugin remembers between sessions that aren't settings. Stored
@@ -40,6 +40,8 @@ function emptyCache(site: string): PluginCache {
 export default class GhostyPostyPlugin extends Plugin {
     settings: GhostyPostySettings;
     private cache: PluginCache = emptyCache('');
+    private statusBarEl: HTMLElement | null = null;
+    private refreshStatusBar = debounce(() => void this.updateStatusBar(), 250, true);
 
     /** Remembers which images are already on Ghost so updates skip them. */
     readonly imageMemory: ImageMemory = {
@@ -79,6 +81,23 @@ export default class GhostyPostyPlugin extends Plugin {
             }
         });
 
+        // Commands for a note that is already on Ghost
+        this.addCommand({
+            id: 'open-post-on-ghost',
+            name: 'Open post on Ghost',
+            checkCallback: (checking) => this.withPublishedNote(checking, (ref) => this.openPost(ref))
+        });
+        this.addCommand({
+            id: 'open-in-ghost-editor',
+            name: 'Open in Ghost editor',
+            checkCallback: (checking) => this.withPublishedNote(checking, (ref) => this.openInEditor(ref))
+        });
+        this.addCommand({
+            id: 'copy-post-link',
+            name: 'Copy post link',
+            checkCallback: (checking) => this.withPublishedNote(checking, (ref) => this.copyPostLink(ref))
+        });
+
         // Ribbon icon (Lucide "ghost") as a one-click entry point
         this.addRibbonIcon('ghost', 'Publish to Ghost', () => {
             const file = this.getActiveFile();
@@ -105,6 +124,27 @@ export default class GhostyPostyPlugin extends Plugin {
                 }
             })
         );
+
+        // Status bar: where the open note stands on Ghost (desktop only;
+        // Obsidian has no status bar on mobile)
+        this.statusBarEl = this.addStatusBarItem();
+        this.statusBarEl.addClass('ghosty-posty-statusbar', 'mod-clickable');
+        this.statusBarEl.hide();
+        this.statusBarEl.addEventListener('click', () => {
+            const file = this.app.workspace.getActiveFile();
+            if (file) {
+                void this.publishNote(file);
+            }
+        });
+        const refreshIfActive = (file: unknown) => {
+            if (file === this.app.workspace.getActiveFile()) {
+                this.refreshStatusBar();
+            }
+        };
+        this.registerEvent(this.app.workspace.on('file-open', () => this.refreshStatusBar()));
+        this.registerEvent(this.app.metadataCache.on('changed', refreshIfActive));
+        this.registerEvent(this.app.vault.on('modify', refreshIfActive));
+        this.app.workspace.onLayoutReady(() => this.refreshStatusBar());
 
         // Add settings tab
         this.addSettingTab(new GhostyPostySettingTab(this.app, this));
@@ -177,18 +217,17 @@ export default class GhostyPostyPlugin extends Plugin {
      * Add the plugin's context-menu items for a given note.
      */
     private addMenuItems(menu: Menu, file: TFile): void {
-        const isPublished = this.getExistingRef(file) !== undefined;
-
         menu.addItem((item) => {
             item
-                .setTitle(isPublished ? 'Update on Ghost' : 'Publish to Ghost')
+                .setTitle(this.getExistingRef(file) ? 'Update on Ghost' : 'Publish to Ghost')
                 .setIcon('ghost')
                 .onClick(() => {
                     void this.publishNote(file);
                 });
         });
 
-        if (isPublished) {
+        const ref = this.getExistingRef(file);
+        if (ref) {
             menu.addItem((item) => {
                 item
                     .setTitle('Sync from Ghost')
@@ -197,7 +236,110 @@ export default class GhostyPostyPlugin extends Plugin {
                         void this.syncNote(file);
                     });
             });
+            if (ref.url) {
+                menu.addItem((item) => {
+                    item
+                        .setTitle('Open post on Ghost')
+                        .setIcon('external-link')
+                        .onClick(() => this.openPost(ref));
+                });
+                menu.addItem((item) => {
+                    item
+                        .setTitle('Copy post link')
+                        .setIcon('link')
+                        .onClick(() => this.copyPostLink(ref));
+                });
+            }
+            menu.addItem((item) => {
+                item
+                    .setTitle('Open in Ghost editor')
+                    .setIcon('pencil')
+                    .onClick(() => this.openInEditor(ref));
+            });
         }
+    }
+
+    /**
+     * Shared shape for commands that only apply to a note that is on Ghost.
+     */
+    private withPublishedNote(checking: boolean, action: (ref: GhostPostRef) => void): boolean {
+        const file = this.app.workspace.getActiveFile();
+        const ref = file && file.extension === 'md' ? this.getExistingRef(file) : undefined;
+        if (!ref) {
+            return false;
+        }
+        if (!checking) {
+            action(ref);
+        }
+        return true;
+    }
+
+    private openPost(ref: GhostPostRef): void {
+        if (!ref.url) {
+            new Notice('This note has no Ghost link yet. Update it on Ghost once to record one.');
+            return;
+        }
+        window.open(ref.url);
+    }
+
+    private openInEditor(ref: GhostPostRef): void {
+        if (!this.settings.ghostUrl) {
+            new Notice('Please configure your Ghost credentials in settings first');
+            return;
+        }
+        window.open(editorUrl(this.settings.ghostUrl, ref.id));
+    }
+
+    private copyPostLink(ref: GhostPostRef): void {
+        if (!ref.url) {
+            new Notice('This note has no Ghost link yet. Update it on Ghost once to record one.');
+            return;
+        }
+        void navigator.clipboard.writeText(ref.url).then(
+            () => new Notice('Link copied'),
+            () => new Notice('Could not copy the link')
+        );
+    }
+
+    /**
+     * Show where the open note stands on Ghost, and whether it has edits that
+     * haven't been pushed. Hidden for notes that aren't on Ghost.
+     */
+    private async updateStatusBar(): Promise<void> {
+        const el = this.statusBarEl;
+        if (!el) {
+            return;
+        }
+
+        const file = this.app.workspace.getActiveFile();
+        const ref = file && file.extension === 'md' ? this.getExistingRef(file) : undefined;
+        if (!file || !ref) {
+            el.hide();
+            return;
+        }
+
+        let sync: SyncState = 'unknown';
+        const pushed = this.cache.pushed[ref.id];
+        if (pushed !== undefined) {
+            try {
+                const current = this.fingerprint(await this.app.vault.cachedRead(file));
+                sync = current === pushed ? 'in-sync' : 'ahead';
+            } catch {
+                sync = 'unknown';
+            }
+        }
+
+        // The active note may have changed while the file was being read
+        if (file !== this.app.workspace.getActiveFile()) {
+            return;
+        }
+
+        const status: unknown = this.app.metadataCache.getFileCache(file)?.frontmatter?.status;
+        el.setText(statusBarText(typeof status === 'string' ? status : undefined, sync));
+        el.toggleClass('is-in-sync', sync === 'in-sync');
+        el.toggleClass('is-ahead', sync === 'ahead');
+        setTooltip(el, sync === 'ahead' ? 'This note has changes that are not on Ghost. Click to update.' : 'Click to update this post on Ghost');
+        el.show();
     }
 
     /**
@@ -227,9 +369,11 @@ export default class GhostyPostyPlugin extends Plugin {
             return undefined;
         }
         const updatedAt = frontmatter[FRONTMATTER_KEYS.updatedAt];
+        const url = frontmatter[FRONTMATTER_KEYS.url];
         return {
             id,
-            updatedAt: typeof updatedAt === 'string' ? updatedAt : undefined
+            updatedAt: typeof updatedAt === 'string' ? updatedAt : undefined,
+            url: typeof url === 'string' && url !== '' ? url : undefined
         };
     }
 
@@ -358,7 +502,7 @@ export default class GhostyPostyPlugin extends Plugin {
         await this.rememberPushed(file, post.id);
 
         let archivedTo: string | undefined;
-        if (shouldArchive('first-send', { status: post.status, previousStatus })) {
+        if (shouldArchive(this.settings.archiveWhen, { status: post.status, previousStatus })) {
             archivedTo = await this.archiveNote(file);
         }
 
@@ -452,6 +596,7 @@ export default class GhostyPostyPlugin extends Plugin {
         try {
             this.cache.pushed[postId] = this.fingerprint(await this.app.vault.read(file));
             await this.saveCache();
+            this.refreshStatusBar();
         } catch {
             // Not being able to record this only affects the sync indicator
         }

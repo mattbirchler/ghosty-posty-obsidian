@@ -1,7 +1,7 @@
 import { App, PluginSettingTab, Setting, Notice } from 'obsidian';
 import type GhostyPostyPlugin from './main';
 import { GhostAPI } from './ghost-api';
-import { PostStatus } from './types';
+import { ArchiveWhen, PostStatus } from './types';
 import { FolderSuggest } from './folder-suggest';
 
 export class GhostyPostySettingTab extends PluginSettingTab {
@@ -60,7 +60,7 @@ export class GhostyPostySettingTab extends PluginSettingTab {
         // Archive folder setting
         new Setting(containerEl)
             .setName('Archive folder')
-            .setDesc('Move notes to this folder after successful publishing (leave empty to disable)')
+            .setDesc('Move notes to this folder once they are on Ghost (leave empty to disable)')
             .addText(text => {
                 text
                     .setPlaceholder('')
@@ -72,6 +72,19 @@ export class GhostyPostySettingTab extends PluginSettingTab {
                 new FolderSuggest(this.app, text.inputEl);
                 return text;
             });
+
+        // When to archive
+        new Setting(containerEl)
+            .setName('Archive notes')
+            .setDesc('Choose "when published" to keep a note in place while it is still a draft on Ghost')
+            .addDropdown(dropdown => dropdown
+                .addOption('first-send', 'When first sent to Ghost, drafts included')
+                .addOption('published', 'When published or scheduled')
+                .setValue(this.plugin.settings.archiveWhen)
+                .onChange(async (value) => {
+                    this.plugin.settings.archiveWhen = value as ArchiveWhen;
+                    await this.plugin.saveSettings();
+                }));
 
         // Test connection button
         new Setting(containerEl)

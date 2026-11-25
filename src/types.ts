@@ -47,6 +47,8 @@ export interface GhostPostRef {
     id: string;
     /** The updated_at value we last saw (from our last publish or sync). */
     updatedAt?: string;
+    /** Public (or, for drafts, preview) address of the post. */
+    url?: string;
 }
 
 /**

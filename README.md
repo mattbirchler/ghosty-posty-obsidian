@@ -12,22 +12,53 @@ Publish your Obsidian notes directly to Ghost blogs with automatic image uploads
 - **Wiki Link Conversion**: Converts `[[links]]` to plain text for Ghost compatibility
 
 ### Publishing Options
-- **Editable Metadata**: Review and edit title, tags, and status before publishing
-- **Post Status**: Choose Draft, Published, or Scheduled
-- **Scheduled Publishing**: Set a future date/time (in your local timezone) to publish
-- **Featured Posts**: Toggle to mark posts as featured on your Ghost site
-- **Tags Management**: Add comma-separated tags directly in the modal
+- **A button that says what it will do**: "Save draft", "Publish now", "Schedule for Thu 9:00 AM", "Publish and email 1,204 people", "Update live post"
+- **Draft, publish or schedule**: one three-way choice, with a date picker (your local timezone) when scheduling
+- **Excerpt**: set the summary shown on your home page, in email previews and on social cards
+- **Tags as chips**: with autocomplete from the tags that already exist on your site
+- **Visibility**: everyone, members only, or paid members only
+- **Email**: send the post to a newsletter, with a confirmation step that shows who will receive it
+- **More**: URL slug and featured post, tucked away until you need them
+
+### Updating and Syncing
+- **Updates start from Ghost**: reopening a published note loads the post from Ghost first, so its status, tags and other details start from what is live. A published post is never silently reverted to a draft.
+- **Conflict warning**: if the post was edited on Ghost since you last published or synced, you are told before anything is sent and can sync first
+- **Sync from Ghost**: pull the current version of a post back into the note
+- **Edits are remembered**: the title, status, tags, visibility and excerpt you confirm are written back to the note's properties
+
+### Images
+- **Checked up front**: every image is listed with a thumbnail and size when the window opens. A missing file is flagged before you publish, and you can choose to publish without it.
+- **Per-image progress**: each image shows its own state while uploading, three at a time
+- **Upload memory**: images that are already on Ghost and unchanged are skipped on later updates
+- **Retry**: if an upload fails, the ones that finished are kept and a retry only sends what failed
+- **Featured image alt text**: alt text on the first-line image is sent to Ghost
+
+### After Publishing
+- **Useful confirmation**: a notice that says what happened, with links to open the post (or preview a draft), copy its link, or edit it in Ghost
+- **Commands**: "Open post on Ghost", "Open in Ghost editor" and "Copy post link", also in the right-click menu
+- **Status bar** (desktop): shows whether the open note is a draft, scheduled or published on Ghost, and whether it has edits that have not been pushed. Click it to update.
 
 ### Frontmatter Support
 Control your posts with YAML frontmatter:
 - `title`: Override the filename as the post title
 - `slug`: Custom URL slug for the post
 - `tags`: Array or comma-separated list of tags
-- `status`: `draft`, `published`, or `scheduled`
+- `status`: `draft`, `published`, or `scheduled` (for new posts; updates use the status on Ghost)
 - `publish_date` or `date`: Schedule future publishing
+- `visibility`: `public`, `members`, or `paid`
+- `excerpt`: Custom excerpt
+- `featured`: `true` or `false`
+
+The plugin also writes `ghost_id`, `ghost_url` and `ghost_updated_at` to track the post.
+
+### Obsidian Syntax
+- Comments (`%%like this%%`) are removed and never published
+- Image resize hints (`![[shot.png|400]]`) are not turned into alt text
+- Embeds that are not images (other notes, PDFs, video) are left out, and the publish window tells you
 
 ### Archive After Publishing
-- **Optional Archive Folder**: Automatically move notes to a designated folder after a successful publish
+- **Optional Archive Folder**: Automatically move notes to a designated folder once they are on Ghost
+- **Your Choice of When**: Archive the first time a note is sent (drafts included), or only once it is published or scheduled
 - **Folder Autocomplete**: Suggests existing folders as you type
 - **Auto-Creates Folders**: Creates the archive folder if it doesn't exist
 - **Collision Safe**: Appends a timestamp if a file with the same name is already in the archive
@@ -85,13 +116,12 @@ Tests use Node's built-in test runner (via [`tsx`](https://github.com/privatenum
 1. Open the note you want to publish
 2. Open the Command Palette (`Cmd/Ctrl + P`)
 3. Run **"Publish to Ghost"**
-4. Review the metadata in the modal:
-   - Edit the title if needed
-   - Choose the status (Draft/Published/Scheduled)
-   - If Scheduled, pick a date and time
-   - Add or modify tags
-   - Toggle "Featured" if desired
-5. Click **Publish**
+4. Review the post in the window that opens:
+   - Edit the title, excerpt and tags if needed
+   - Choose Save draft, Publish now or Schedule
+   - Choose who can read it, and whether to email it
+   - Check the image list for anything missing
+5. Press the button. Its label tells you exactly what will happen.
 
 ### Using Frontmatter
 
@@ -147,7 +177,7 @@ If you set an **Archive folder** in settings, notes are automatically moved ther
 - Start with drafts to preview your posts before publishing
 - Tags from frontmatter will be pre-filled but can be edited in the modal
 - Scheduled posts use your local timezone and are converted to UTC for Ghost
-- The plugin will block publishing if any image fails to upload
+- If an image is missing or fails to upload, you can fix it, retry, or publish without it
 
 ## Troubleshooting
 

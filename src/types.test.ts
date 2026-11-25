@@ -17,4 +17,6 @@ test('default settings are sensibly initialised', () => {
     assert.equal(DEFAULT_SETTINGS.archiveFolder, '');
     // Draft-by-default protects users from accidentally publishing live.
     assert.equal(DEFAULT_SETTINGS.defaultStatus, 'draft');
+    // Archiving keeps its original behaviour unless the user opts in to the new one.
+    assert.equal(DEFAULT_SETTINGS.archiveWhen, 'first-send');
 });
