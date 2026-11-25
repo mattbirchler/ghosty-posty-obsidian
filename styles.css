@@ -225,18 +225,26 @@
     padding: 6px 6px;
     border: none;
     border-radius: 6px;
-    background: transparent;
-    box-shadow: none;
     color: var(--text-muted);
     white-space: normal;
     cursor: pointer;
 }
 
-.ghosty-posty-modal .ghosty-posty-segment button.is-active {
-    background: var(--background-primary);
+/* Themes often give every button a filled background. The unselected
+   choices must stay flat or the selected one is impossible to pick out. */
+.ghosty-posty-modal .ghosty-posty-segment button:not(.is-active) {
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+.ghosty-posty-modal .ghosty-posty-segment button:not(.is-active):hover {
     color: var(--text-normal);
+}
+
+.ghosty-posty-modal .ghosty-posty-segment button.is-active {
+    background: var(--interactive-accent) !important;
+    color: var(--text-on-accent) !important;
     font-weight: var(--font-semibold);
-    box-shadow: var(--input-shadow);
 }
 
 .ghosty-posty-schedule-picker input[type="datetime-local"] {
