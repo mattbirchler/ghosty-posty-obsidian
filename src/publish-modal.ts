@@ -1,80 +1,97 @@
-import { App, Modal, Setting, Notice, Vault, TFile, MetadataCache } from 'obsidian';
+import { Modal, Setting, TFile } from 'obsidian';
+import type GhostyPostyPlugin from './main';
 import {
-    PostMetadata,
+    DeliveryMode,
+    GhostNewsletter,
+    GhostPost,
     GhostPostPayload,
     GhostPostResult,
+    PostMetadata,
     PostStatus,
-    PostVisibility,
-    DeliveryMode,
-    ImageReference,
-    GhostNewsletter
+    ServerPostStatus
 } from './types';
 import { GhostAPI, PublishOptions } from './ghost-api';
-import { ConversionResult, replaceImageUrls } from './markdown-converter';
+import { ConversionResult, removeImages, renderVideos, replaceImageUrls } from './markdown-converter';
+import { ImageList } from './image-list';
+import { TagInput } from './tag-input';
+import {
+    EXCERPT_MAX_LENGTH,
+    FEATURE_ALT_MAX_LENGTH,
+    FormValues,
+    canEmail,
+    formatPeople,
+    formatWhen,
+    initialFormValues,
+    publishButtonLabel,
+    statusChoices
+} from './publish-logic';
+
+/** What the modal hands back after a successful save. */
+export interface PublishResult {
+    post: GhostPostResult;
+    /** Status on Ghost before this save; undefined for a new post. */
+    previousStatus?: ServerPostStatus;
+    emailed: boolean;
+    recipients?: number;
+    /** The values the user confirmed, for writing back to frontmatter. */
+    values: FormValues;
+}
+
+const SERVER_STATUS_BADGES: Record<ServerPostStatus, string> = {
+    draft: 'Draft on Ghost',
+    published: 'Published on Ghost',
+    scheduled: 'Scheduled on Ghost',
+    sent: 'Emailed'
+};
 
 export class PublishModal extends Modal {
-    private metadata: PostMetadata;
-    private conversionResult: ConversionResult;
-    private ghostUrl: string;
-    private apiKey: string;
-    private vault: Vault;
-    private metadataCache: MetadataCache;
-    private sourceFile: TFile;
-    private onSuccess: (post: GhostPostResult, wasCreate: boolean) => void;
-
-    /** True when this note already exists on Ghost (update mode). */
+    private readonly api: GhostAPI;
     private readonly isUpdate: boolean;
 
-    // Editable form values
-    private editableTitle: string;
-    private editableStatus: PostStatus;
-    private editableTags: string;
-    private editableVisibility: PostVisibility;
-    private editableFeatured: boolean = false;
-    private editableScheduledDate: string = '';
+    /** The post as it is on Ghost right now (update mode only). */
+    private serverPost: GhostPostResult | undefined;
+    /** The post changed on Ghost since this note last saw it. */
+    private conflict = false;
 
-    // Delivery / newsletter
-    private newsletters: GhostNewsletter[] = [];
+    private values!: FormValues;
     private deliveryMode: DeliveryMode = 'post';
-    private selectedNewsletterSlug: string = '';
+    private newsletters: GhostNewsletter[] = [];
+    private selectedNewsletterSlug = '';
 
-    // If a server-side change is detected, require a second confirming click.
-    private overwriteConfirmed: boolean = false;
+    private images!: ImageList;
+    private tagInput: TagInput | null = null;
+
+    private busy = false;
+    /** The user has already confirmed the email for the current choices. */
+    private emailConfirmed = false;
+    private uploadFailed = false;
 
     // UI elements
-    private publishButton: HTMLButtonElement | null = null;
-    private statusEl: HTMLElement | null = null;
-    private scheduleDateContainer: HTMLElement | null = null;
-    private deliveryContainer: HTMLElement | null = null;
-    private newsletterPickerContainer: HTMLElement | null = null;
+    private mainEl!: HTMLElement;
+    private confirmEl!: HTMLElement;
+    private formEl: HTMLElement | null = null;
+    private scheduleEl: HTMLElement | null = null;
+    private deliveryEl: HTMLElement | null = null;
+    private segmentButtons = new Map<PostStatus, HTMLButtonElement>();
+    private imageProblemEl: HTMLElement | null = null;
+    private progressEl: HTMLElement | null = null;
+    private progressBarEl: HTMLElement | null = null;
+    private progressTextEl: HTMLElement | null = null;
+    private errorEl: HTMLElement | null = null;
+    private primaryButton: HTMLButtonElement | null = null;
+    private cancelButton: HTMLButtonElement | null = null;
 
     constructor(
-        app: App,
-        vault: Vault,
-        metadataCache: MetadataCache,
-        sourceFile: TFile,
-        metadata: PostMetadata,
-        conversionResult: ConversionResult,
-        ghostUrl: string,
-        apiKey: string,
-        onSuccess: (post: GhostPostResult, wasCreate: boolean) => void
+        private plugin: GhostyPostyPlugin,
+        private sourceFile: TFile,
+        private metadata: PostMetadata,
+        private conversionResult: ConversionResult,
+        private onSuccess: (result: PublishResult) => void,
+        private onSyncRequested: () => void
     ) {
-        super(app);
-        this.vault = vault;
-        this.metadataCache = metadataCache;
-        this.sourceFile = sourceFile;
-        this.metadata = metadata;
-        this.conversionResult = conversionResult;
-        this.ghostUrl = ghostUrl;
-        this.apiKey = apiKey;
-        this.onSuccess = onSuccess;
+        super(plugin.app);
+        this.api = plugin.createApi();
         this.isUpdate = metadata.existing !== undefined;
-
-        // Initialize editable values
-        this.editableTitle = metadata.title;
-        this.editableStatus = metadata.status;
-        this.editableTags = metadata.tags.join(', ');
-        this.editableVisibility = metadata.visibility;
     }
 
     onOpen() {
@@ -82,488 +99,738 @@ export class PublishModal extends Modal {
         contentEl.empty();
         contentEl.addClass('ghosty-posty-modal');
 
-        contentEl.createEl('h2', { text: this.isUpdate ? 'Update on Ghost' : 'Publish to Ghost' });
+        this.mainEl = contentEl.createDiv();
+        this.confirmEl = contentEl.createDiv({ cls: 'ghosty-posty-confirm' });
+        this.confirmEl.hide();
 
         if (this.isUpdate) {
-            const note = contentEl.createDiv({ cls: 'ghosty-posty-field' });
-            note.createEl('span', { text: 'This note is already on Ghost — publishing updates the existing post.' });
-        }
-
-        // Editable fields section
-        const formSection = contentEl.createDiv({ cls: 'ghosty-posty-form' });
-
-        // Title input
-        new Setting(formSection)
-            .setName('Title')
-            .addText(text => text
-                .setValue(this.editableTitle)
-                .onChange(value => {
-                    this.editableTitle = value;
-                }));
-
-        // Status dropdown
-        new Setting(formSection)
-            .setName('Status')
-            .addDropdown(dropdown => dropdown
-                .addOption('draft', 'Draft')
-                .addOption('published', 'Published')
-                .addOption('scheduled', 'Scheduled')
-                .setValue(this.editableStatus)
-                .onChange(value => {
-                    this.editableStatus = value as PostStatus;
-                    this.toggleScheduleDateVisibility();
-                    this.toggleDeliveryVisibility();
-                }));
-
-        // Schedule date picker (hidden by default)
-        this.scheduleDateContainer = formSection.createDiv({ cls: 'ghosty-posty-schedule-picker' });
-        new Setting(this.scheduleDateContainer)
-            .setName('Schedule for')
-            .setDesc('Date and time to publish (your local timezone)')
-            .addText(text => {
-                text.inputEl.type = 'datetime-local';
-                // Set default to the next hour today (e.g. 2:30pm -> 3:00pm)
-                const nextHour = new Date();
-                nextHour.setHours(nextHour.getHours() + 1, 0, 0, 0);
-                const defaultDate = this.toLocalDatetimeString(nextHour);
-                text.setValue(defaultDate);
-                this.editableScheduledDate = defaultDate;
-                text.onChange(value => {
-                    this.editableScheduledDate = value;
-                });
-            });
-        this.toggleScheduleDateVisibility();
-
-        // Featured toggle
-        new Setting(formSection)
-            .setName('Featured')
-            .setDesc('Mark this post as featured')
-            .addToggle(toggle => toggle
-                .setValue(this.editableFeatured)
-                .onChange(value => {
-                    this.editableFeatured = value;
-                }));
-
-        // Tags input
-        new Setting(formSection)
-            .setName('Tags')
-            .setDesc('Comma-separated list of tags')
-            .addText(text => text
-                .setValue(this.editableTags)
-                .onChange(value => {
-                    this.editableTags = value;
-                }));
-
-        // Visibility dropdown
-        new Setting(formSection)
-            .setName('Visibility')
-            .setDesc('Who can read this post')
-            .addDropdown(dropdown => dropdown
-                .addOption('public', 'Public')
-                .addOption('members', 'Members (all signed-in members)')
-                .addOption('paid', 'Paid members only')
-                .setValue(this.editableVisibility)
-                .onChange(value => {
-                    this.editableVisibility = value as PostVisibility;
-                }));
-
-        // Delivery / newsletter section (populated async once newsletters load)
-        this.deliveryContainer = formSection.createDiv({ cls: 'ghosty-posty-delivery' });
-        void this.buildDeliverySection();
-
-        // Image info section
-        const totalImages = this.conversionResult.images.length +
-            (this.conversionResult.featuredImage ? 1 : 0);
-
-        if (totalImages > 0 || this.conversionResult.featuredImage) {
-            const imageSection = contentEl.createDiv({ cls: 'ghosty-posty-images' });
-            imageSection.createEl('h3', { text: 'Images' });
-
-            if (this.conversionResult.featuredImage) {
-                const featuredDiv = imageSection.createDiv({ cls: 'ghosty-posty-field' });
-                featuredDiv.createEl('strong', { text: 'Featured image: ' });
-                featuredDiv.createEl('span', { text: this.getFilename(this.conversionResult.featuredImage.path) });
-            }
-
-            if (this.conversionResult.images.length > 0) {
-                const countDiv = imageSection.createDiv({ cls: 'ghosty-posty-field' });
-                countDiv.createEl('strong', { text: 'Content images: ' });
-                countDiv.createEl('span', { text: `${this.conversionResult.images.length}` });
-            }
-        }
-
-        // Scheduled date (if applicable from metadata)
-        if (this.metadata.status === 'scheduled' && this.metadata.publishedAt) {
-            const scheduleSection = contentEl.createDiv({ cls: 'ghosty-posty-schedule' });
-            const dateDiv = scheduleSection.createDiv({ cls: 'ghosty-posty-field' });
-            dateDiv.createEl('strong', { text: 'Scheduled for: ' });
-            dateDiv.createEl('span', { text: this.formatDate(this.metadata.publishedAt) });
-        }
-
-        // Status/progress area
-        this.statusEl = contentEl.createDiv({ cls: 'ghosty-posty-status' });
-
-        // Buttons
-        const buttonContainer = contentEl.createDiv({ cls: 'ghosty-posty-buttons' });
-
-        const cancelButton = buttonContainer.createEl('button', { text: 'Cancel' });
-        cancelButton.addEventListener('click', () => this.close());
-
-        this.publishButton = buttonContainer.createEl('button', {
-            text: this.isUpdate ? 'Update' : 'Publish',
-            cls: 'mod-cta'
-        });
-        this.publishButton.addEventListener('click', () => {
-            void this.publish();
-        });
-    }
-
-    /**
-     * Fetch the site's active newsletters and build the delivery selector.
-     * If the site has no newsletters, the section stays hidden and posts
-     * simply publish to the web (the existing behaviour).
-     */
-    private async buildDeliverySection(): Promise<void> {
-        if (!this.deliveryContainer) {
-            return;
-        }
-
-        const api = new GhostAPI(this.ghostUrl, this.apiKey);
-        this.newsletters = await api.getNewsletters();
-
-        this.deliveryContainer.empty();
-
-        if (this.newsletters.length === 0) {
-            this.toggleDeliveryVisibility();
-            return;
-        }
-
-        this.selectedNewsletterSlug = this.newsletters[0].slug;
-
-        new Setting(this.deliveryContainer)
-            .setName('Publish as')
-            .setDesc('Post, email, or both')
-            .addDropdown(dropdown => dropdown
-                .addOption('post', 'Post only')
-                .addOption('newsletter_only', 'Email only')
-                .addOption('post_and_newsletter', 'Post and email')
-                .setValue(this.deliveryMode)
-                .onChange(value => {
-                    this.deliveryMode = value as DeliveryMode;
-                    this.toggleNewsletterPickerVisibility();
-                }));
-
-        // Newsletter picker — only needed when the site has more than one.
-        this.newsletterPickerContainer = this.deliveryContainer.createDiv({ cls: 'ghosty-posty-newsletter-picker' });
-        if (this.newsletters.length > 1) {
-            new Setting(this.newsletterPickerContainer)
-                .setName('Newsletter')
-                .addDropdown(dropdown => {
-                    for (const nl of this.newsletters) {
-                        dropdown.addOption(nl.slug, nl.name);
-                    }
-                    dropdown.setValue(this.selectedNewsletterSlug);
-                    dropdown.onChange(value => {
-                        this.selectedNewsletterSlug = value;
-                    });
-                });
-        }
-
-        this.toggleDeliveryVisibility();
-        this.toggleNewsletterPickerVisibility();
-    }
-
-    private getFilename(path: string): string {
-        return path.split('/').pop() || path;
-    }
-
-    private formatDate(isoDate: string): string {
-        try {
-            const date = new Date(isoDate);
-            return date.toLocaleString();
-        } catch {
-            return isoDate;
-        }
-    }
-
-    /**
-     * Convert a Date to the format required by datetime-local input (YYYY-MM-DDTHH:mm)
-     */
-    private toLocalDatetimeString(date: Date): string {
-        const year = date.getFullYear();
-        const month = String(date.getMonth() + 1).padStart(2, '0');
-        const day = String(date.getDate()).padStart(2, '0');
-        const hours = String(date.getHours()).padStart(2, '0');
-        const minutes = String(date.getMinutes()).padStart(2, '0');
-        return `${year}-${month}-${day}T${hours}:${minutes}`;
-    }
-
-    /**
-     * Show/hide the schedule date picker based on status
-     */
-    private toggleScheduleDateVisibility() {
-        if (this.scheduleDateContainer) {
-            this.scheduleDateContainer.toggleClass('is-hidden', this.editableStatus !== 'scheduled');
-        }
-    }
-
-    /**
-     * Newsletters can only be emailed when a post actually goes out (published
-     * or scheduled), and only when the site has newsletters configured.
-     */
-    private toggleDeliveryVisibility() {
-        if (!this.deliveryContainer) {
-            return;
-        }
-        const canSend = this.newsletters.length > 0 &&
-            (this.editableStatus === 'published' || this.editableStatus === 'scheduled');
-        this.deliveryContainer.toggleClass('is-hidden', !canSend);
-        if (!canSend) {
-            // Reset to a safe default when the option is unavailable.
-            this.deliveryMode = 'post';
-        }
-    }
-
-    private toggleNewsletterPickerVisibility() {
-        if (this.newsletterPickerContainer) {
-            const needsPicker = this.newsletters.length > 1 && this.deliveryMode !== 'post';
-            this.newsletterPickerContainer.toggleClass('is-hidden', !needsPicker);
-        }
-    }
-
-    private setStatus(message: string) {
-        if (this.statusEl) {
-            this.statusEl.textContent = message;
-        }
-    }
-
-    private setButtonsEnabled(enabled: boolean) {
-        const buttons = this.contentEl.querySelectorAll('button');
-        buttons.forEach(btn => {
-            if (enabled) {
-                btn.removeAttribute('disabled');
-            } else {
-                btn.setAttribute('disabled', 'true');
-            }
-        });
-    }
-
-    /**
-     * Resolve an image path to a TFile
-     */
-    private resolveImagePath(imagePath: string): TFile | null {
-        // Try direct path first
-        const directFile = this.vault.getAbstractFileByPath(imagePath);
-        if (directFile instanceof TFile) {
-            return directFile;
-        }
-
-        // Try using metadata cache for link resolution (handles relative paths)
-        const resolved = this.metadataCache.getFirstLinkpathDest(imagePath, this.sourceFile.path);
-        if (resolved instanceof TFile) {
-            return resolved;
-        }
-
-        // Try relative to source file's folder
-        const sourceFolder = this.sourceFile.parent?.path || '';
-        const relativePath = sourceFolder ? `${sourceFolder}/${imagePath}` : imagePath;
-        const relativeFile = this.vault.getAbstractFileByPath(relativePath);
-        if (relativeFile instanceof TFile) {
-            return relativeFile;
-        }
-
-        return null;
-    }
-
-    /**
-     * Upload all images and return URL mapping
-     */
-    private async uploadImages(
-        api: GhostAPI,
-        images: ImageReference[]
-    ): Promise<{ success: true; urlMap: Map<string, string> } | { success: false; error: string }> {
-        const urlMap = new Map<string, string>();
-
-        for (let i = 0; i < images.length; i++) {
-            const image = images[i];
-            const filename = this.getFilename(image.path);
-
-            this.setStatus(`Uploading image ${i + 1}/${images.length}: ${filename}...`);
-
-            // Resolve the image file
-            const imageFile = this.resolveImagePath(image.path);
-            if (!imageFile) {
-                return {
-                    success: false,
-                    error: `Image not found: ${image.path}`
-                };
-            }
-
-            // Read the image data
-            let imageData: ArrayBuffer;
-            try {
-                imageData = await this.vault.readBinary(imageFile);
-            } catch {
-                return {
-                    success: false,
-                    error: `Failed to read image: ${image.path}`
-                };
-            }
-
-            // Upload to Ghost
-            const result = await api.uploadImage(filename, imageData);
-            if (!result.success) {
-                return {
-                    success: false,
-                    error: `Failed to upload ${filename}: ${result.error}`
-                };
-            }
-
-            urlMap.set(image.path, result.url);
-        }
-
-        return { success: true, urlMap };
-    }
-
-    private resetButton() {
-        this.setButtonsEnabled(true);
-        if (this.publishButton) {
-            this.publishButton.textContent = this.isUpdate ? 'Update' : 'Publish';
-        }
-    }
-
-    private async publish() {
-        this.setButtonsEnabled(false);
-        if (this.publishButton) {
-            this.publishButton.textContent = this.isUpdate ? 'Updating...' : 'Publishing...';
-        }
-
-        try {
-            const api = new GhostAPI(this.ghostUrl, this.apiKey);
-
-            // For updates, fetch the current post first: Ghost needs its
-            // updated_at for collision detection, and it lets us warn the user
-            // if the post changed on the web since they last synced.
-            let currentUpdatedAt: string | undefined;
-            if (this.isUpdate && this.metadata.existing) {
-                this.setStatus('Checking Ghost for changes...');
-                const fetched = await api.getPost(this.metadata.existing.id);
-                if (!fetched.success) {
-                    new Notice(`Error: ${fetched.error}`);
-                    this.setStatus(`Error: ${fetched.error}`);
-                    this.resetButton();
-                    return;
-                }
-                currentUpdatedAt = fetched.post.updated_at;
-
-                const lastSeen = this.metadata.existing.updatedAt;
-                if (lastSeen && lastSeen !== currentUpdatedAt && !this.overwriteConfirmed) {
-                    this.overwriteConfirmed = true;
-                    this.setStatus('⚠ This post was edited on Ghost since you last synced. Updating will overwrite those changes. Click Update again to overwrite, or Cancel and sync first.');
-                    this.setButtonsEnabled(true);
-                    if (this.publishButton) {
-                        this.publishButton.textContent = 'Overwrite & update';
-                    }
-                    return;
-                }
-            }
-
-            // Collect all images to upload
-            const allImages: ImageReference[] = [
-                ...(this.conversionResult.featuredImage ? [this.conversionResult.featuredImage] : []),
-                ...this.conversionResult.images
-            ];
-
-            let html = this.conversionResult.html;
-            let featureImageUrl: string | undefined;
-
-            // Upload images if there are any
-            if (allImages.length > 0) {
-                const uploadResult = await this.uploadImages(api, allImages);
-
-                if (!uploadResult.success) {
-                    new Notice(`Error: ${uploadResult.error}`);
-                    this.setStatus(`Error: ${uploadResult.error}`);
-                    this.resetButton();
-                    return;
-                }
-
-                // Get featured image URL
-                if (this.conversionResult.featuredImage) {
-                    featureImageUrl = uploadResult.urlMap.get(this.conversionResult.featuredImage.path);
-                }
-
-                // Replace image paths in HTML
-                html = replaceImageUrls(html, uploadResult.urlMap);
-            }
-
-            this.setStatus(this.isUpdate ? 'Updating post...' : 'Creating post...');
-
-            // Parse tags from comma-separated string
-            const tags = this.editableTags
-                .split(',')
-                .map(t => t.trim())
-                .filter(t => t.length > 0);
-
-            // Determine published_at date
-            let publishedAt: string | undefined;
-            if (this.editableStatus === 'scheduled' && this.editableScheduledDate) {
-                // Convert local datetime to ISO string
-                const localDate = new Date(this.editableScheduledDate);
-                publishedAt = localDate.toISOString();
-            } else if (this.metadata.publishedAt) {
-                publishedAt = this.metadata.publishedAt;
-            }
-
-            const emailOnly = this.deliveryMode === 'newsletter_only';
-
-            const payload: GhostPostPayload = {
-                posts: [{
-                    title: this.editableTitle,
-                    html: html,
-                    status: this.editableStatus,
-                    visibility: this.editableVisibility,
-                    ...(this.metadata.slug && { slug: this.metadata.slug }),
-                    ...(tags.length > 0 && {
-                        tags: tags.map(name => ({ name }))
-                    }),
-                    ...(publishedAt && { published_at: publishedAt }),
-                    ...(featureImageUrl && { feature_image: featureImageUrl }),
-                    ...(this.editableFeatured && { featured: true }),
-                    ...(emailOnly && { email_only: true }),
-                    ...(currentUpdatedAt && { updated_at: currentUpdatedAt })
-                }]
-            };
-
-            // Wire up newsletter delivery
-            const options: PublishOptions = {};
-            if (this.deliveryMode !== 'post' && this.selectedNewsletterSlug) {
-                options.newsletterSlug = this.selectedNewsletterSlug;
-            }
-
-            const result = this.isUpdate && this.metadata.existing
-                ? await api.updatePost(this.metadata.existing.id, payload, options)
-                : await api.createPost(payload, options);
-
-            if (result.success) {
-                new Notice(this.isUpdate ? 'Post updated successfully!' : 'Post published successfully!');
-                this.onSuccess(result.post, !this.isUpdate);
-                this.close();
-            } else {
-                new Notice(`Failed: ${result.error}`);
-                this.setStatus(`Error: ${result.error}`);
-                this.resetButton();
-            }
-        } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-            new Notice(`Error: ${errorMessage}`);
-            this.setStatus(`Error: ${errorMessage}`);
-            this.resetButton();
+            void this.loadServerPost();
+        } else {
+            this.renderForm();
         }
     }
 
     onClose() {
-        const { contentEl } = this;
-        contentEl.empty();
+        this.contentEl.empty();
+    }
+
+    // ------------------------------------------------------------------
+    // Loading the post from Ghost (update mode)
+    // ------------------------------------------------------------------
+
+    /**
+     * Fetch the post before showing the form, so the form starts from what is
+     * actually on Ghost (most importantly its status) and a conflict with web
+     * edits is visible before anything is sent.
+     */
+    private async loadServerPost(): Promise<void> {
+        const existing = this.metadata.existing;
+        if (!existing) {
+            return;
+        }
+
+        this.mainEl.empty();
+        this.renderHeader('Update on Ghost');
+        this.mainEl.createDiv({ cls: 'ghosty-posty-loading', text: 'Checking the post on Ghost...' });
+
+        const result = await this.api.getPost(existing.id);
+        if (!this.mainEl.isConnected) {
+            return; // modal was closed while loading
+        }
+
+        if (!result.success) {
+            this.renderLoadError(result.error, result.status === 404);
+            return;
+        }
+
+        this.serverPost = result.post;
+        this.conflict = existing.updatedAt !== undefined && existing.updatedAt !== result.post.updated_at;
+        this.renderForm();
+    }
+
+    private renderLoadError(error: string, notFound: boolean): void {
+        this.mainEl.empty();
+        this.renderHeader('Update on Ghost');
+
+        const callout = this.mainEl.createDiv({ cls: 'ghosty-posty-callout is-error' });
+        if (notFound) {
+            callout.createDiv({ text: 'This post no longer exists on Ghost.' });
+            callout.createDiv({
+                cls: 'ghosty-posty-callout-detail',
+                text: 'To publish this note as a new post, remove ghost_id from its properties and try again.'
+            });
+        } else {
+            callout.createDiv({ text: 'Could not load this post from Ghost.' });
+            callout.createDiv({ cls: 'ghosty-posty-callout-detail', text: error });
+        }
+
+        const footer = this.mainEl.createDiv({ cls: 'ghosty-posty-buttons' });
+        footer.createEl('button', { text: 'Close' }).addEventListener('click', () => this.close());
+        if (!notFound) {
+            const retry = footer.createEl('button', { text: 'Try again', cls: 'mod-cta' });
+            retry.addEventListener('click', () => {
+                void this.loadServerPost();
+            });
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // The form
+    // ------------------------------------------------------------------
+
+    private renderHeader(title: string): void {
+        const header = this.mainEl.createDiv({ cls: 'ghosty-posty-header' });
+        header.createEl('h2', { text: title });
+
+        const badges = header.createDiv({ cls: 'ghosty-posty-badges' });
+        if (this.serverPost) {
+            badges.createSpan({
+                cls: `ghosty-posty-badge is-${this.serverPost.status}`,
+                text: SERVER_STATUS_BADGES[this.serverPost.status] ?? 'On Ghost'
+            });
+        } else if (!this.isUpdate) {
+            badges.createSpan({ cls: 'ghosty-posty-badge', text: 'New post' });
+        }
+        if (this.conflict) {
+            badges.createSpan({ cls: 'ghosty-posty-badge is-warning', text: 'Changed on Ghost' });
+        }
+    }
+
+    private renderForm(): void {
+        this.values = initialFormValues(this.metadata, this.serverPost, new Date());
+        this.images = new ImageList(
+            this.app,
+            this.sourceFile,
+            this.plugin.imageMemory,
+            this.conversionResult.featuredImage,
+            this.conversionResult.images,
+            this.conversionResult.videos
+        );
+
+        this.mainEl.empty();
+        this.renderHeader(this.isUpdate ? 'Update on Ghost' : 'Publish to Ghost');
+
+        if (this.conflict && this.serverPost) {
+            this.renderConflict(this.serverPost);
+        }
+
+        if (this.conversionResult.warnings.length > 0) {
+            const warnings = this.mainEl.createDiv({ cls: 'ghosty-posty-callout is-warning' });
+            for (const warning of this.conversionResult.warnings) {
+                warnings.createDiv({ text: warning });
+            }
+        }
+
+        const form = this.mainEl.createDiv({ cls: 'ghosty-posty-form' });
+        this.formEl = form;
+
+        // Title
+        const titleInput = this.field(form, 'Title', 'ghosty-posty-title').createEl('input', {
+            type: 'text',
+            attr: { id: 'ghosty-posty-title' }
+        });
+        titleInput.value = this.values.title;
+        titleInput.addEventListener('input', () => {
+            this.values.title = titleInput.value;
+        });
+
+        // Excerpt
+        const excerptField = this.field(form, 'Excerpt', 'ghosty-posty-excerpt');
+        const excerptInput = excerptField.createEl('textarea', {
+            attr: {
+                id: 'ghosty-posty-excerpt',
+                rows: '2',
+                placeholder: 'Shown on your home page, in email previews and when shared'
+            }
+        });
+        excerptInput.value = this.values.excerpt;
+        const excerptCount = excerptField.createDiv({ cls: 'ghosty-posty-count' });
+        const paintExcerptCount = () => {
+            const length = this.values.excerpt.trim().length;
+            excerptCount.setText(length > 0 ? `${length} / ${EXCERPT_MAX_LENGTH}` : '');
+            excerptCount.toggleClass('is-error', length > EXCERPT_MAX_LENGTH);
+        };
+        excerptInput.addEventListener('input', () => {
+            this.values.excerpt = excerptInput.value;
+            paintExcerptCount();
+        });
+        paintExcerptCount();
+
+        // Tags
+        this.tagInput = new TagInput(
+            this.app,
+            this.field(form, 'Tags', 'ghosty-posty-tags-input'),
+            this.values.tags,
+            () => this.plugin.siteCache.tags,
+            'ghosty-posty-tags-input'
+        );
+
+        // Draft / publish / schedule
+        const choices = statusChoices(this.serverPost?.status);
+        this.segmentButtons.clear();
+        if (choices.length > 0) {
+            const segment = form.createDiv({
+                cls: 'ghosty-posty-segment',
+                attr: { role: 'group', 'aria-label': 'What to do with this post' }
+            });
+            for (const choice of choices) {
+                const button = segment.createEl('button', { text: choice.label, attr: { type: 'button' } });
+                button.addEventListener('click', () => this.setStatus(choice.value));
+                this.segmentButtons.set(choice.value, button);
+            }
+        }
+
+        // Schedule date (only shown when scheduling)
+        this.scheduleEl = form.createDiv({ cls: 'ghosty-posty-schedule-picker' });
+        new Setting(this.scheduleEl)
+            .setName('Publish on')
+            .setDesc('Your local time')
+            .addText((text) => {
+                text.inputEl.type = 'datetime-local';
+                text.setValue(this.values.scheduledAt);
+                text.onChange((value) => {
+                    this.values.scheduledAt = value;
+                    this.refreshPrimary();
+                });
+            });
+
+        // Visibility
+        new Setting(form)
+            .setName('Who can read it')
+            .addDropdown((dropdown) => {
+                dropdown
+                    .addOption('public', 'Everyone')
+                    .addOption('members', 'Members only')
+                    .addOption('paid', 'Paid members only');
+                if (this.values.visibility === 'tiers') {
+                    dropdown.addOption('tiers', 'Specific tiers (set on Ghost)');
+                }
+                dropdown
+                    .setValue(this.values.visibility)
+                    .onChange((value) => {
+                        this.values.visibility = value as FormValues['visibility'];
+                    });
+            });
+
+        // Email delivery. Starts from the cached newsletter list so the row
+        // doesn't pop in late, then refreshes in the background.
+        this.deliveryEl = form.createDiv({ cls: 'ghosty-posty-delivery' });
+        this.setNewsletters(this.plugin.siteCache.newsletters);
+        void this.plugin.refreshNewsletters().then((fresh) => {
+            if (this.mainEl.isConnected && !this.busy && JSON.stringify(fresh) !== JSON.stringify(this.newsletters)) {
+                this.setNewsletters(fresh);
+            }
+        });
+        void this.plugin.refreshTags();
+
+        // Rarely used options
+        const more = form.createEl('details', { cls: 'ghosty-posty-more' });
+        more.createEl('summary', { text: 'More: URL slug, featured post' });
+        new Setting(more)
+            .setName('URL slug')
+            .setDesc(this.isUpdate ? 'Changing this changes the address of the post' : 'Leave empty to let Ghost create one from the title')
+            .addText((text) => text
+                .setValue(this.values.slug)
+                .onChange((value) => {
+                    this.values.slug = value.trim();
+                }));
+        new Setting(more)
+            .setName('Featured')
+            .setDesc('Highlight this post on your site')
+            .addToggle((toggle) => toggle
+                .setValue(this.values.featured)
+                .onChange((value) => {
+                    this.values.featured = value;
+                }));
+
+        // Images
+        if (this.images.count > 0) {
+            const imagesEl = this.mainEl.createDiv({ cls: 'ghosty-posty-images' });
+            this.images.render(imagesEl);
+        }
+        this.imageProblemEl = this.mainEl.createDiv();
+
+        // Progress and errors
+        this.progressEl = this.mainEl.createDiv({ cls: 'ghosty-posty-progress' });
+        this.progressTextEl = this.progressEl.createDiv({ cls: 'ghosty-posty-progress-text' });
+        this.progressBarEl = this.progressEl
+            .createDiv({ cls: 'ghosty-posty-progress-track' })
+            .createDiv({ cls: 'ghosty-posty-progress-bar' });
+        this.progressEl.hide();
+
+        this.errorEl = this.mainEl.createDiv({ cls: 'ghosty-posty-callout is-error', attr: { role: 'alert' } });
+        this.errorEl.hide();
+
+        // Buttons
+        const footer = this.mainEl.createDiv({ cls: 'ghosty-posty-buttons' });
+        this.cancelButton = footer.createEl('button', { text: 'Cancel' });
+        this.cancelButton.addEventListener('click', () => this.close());
+        this.primaryButton = footer.createEl('button', { cls: 'mod-cta' });
+        this.primaryButton.addEventListener('click', () => this.onPrimary());
+
+        this.setStatus(this.values.status);
+        this.renderImageProblems();
+    }
+
+    /** A labelled, full-width field. */
+    private field(parent: HTMLElement, label: string, inputId: string): HTMLElement {
+        const el = parent.createDiv({ cls: 'ghosty-posty-input' });
+        el.createEl('label', { text: label, attr: { for: inputId } });
+        return el;
+    }
+
+    private renderConflict(serverPost: GhostPostResult): void {
+        const callout = this.mainEl.createDiv({ cls: 'ghosty-posty-callout is-error' });
+        const when = formatWhen(serverPost.updated_at);
+        callout.createDiv({
+            text: `This post was edited on Ghost${when ? ` on ${when}` : ''}, after you last published or synced this note.`
+        });
+        callout.createDiv({
+            cls: 'ghosty-posty-callout-detail',
+            text: 'Updating from this note replaces those edits.'
+        });
+        const syncButton = callout.createEl('button', { text: 'Sync from Ghost first' });
+        syncButton.addEventListener('click', () => {
+            this.close();
+            this.onSyncRequested();
+        });
+    }
+
+    private setStatus(status: PostStatus): void {
+        this.values.status = status;
+        this.emailConfirmed = false;
+        for (const [value, button] of this.segmentButtons) {
+            button.toggleClass('is-active', value === status);
+            button.setAttribute('aria-pressed', String(value === status));
+        }
+        this.scheduleEl?.toggleClass('is-hidden', status !== 'scheduled');
+        this.refreshDelivery();
+        this.refreshPrimary();
+    }
+
+    // ------------------------------------------------------------------
+    // Email delivery
+    // ------------------------------------------------------------------
+
+    private get selectedNewsletter(): GhostNewsletter | undefined {
+        return this.newsletters.find((n) => n.slug === this.selectedNewsletterSlug);
+    }
+
+    /** Subscriber count of the chosen newsletter, when Ghost reports it. */
+    private get recipients(): number | undefined {
+        return this.selectedNewsletter?.count?.active_members;
+    }
+
+    private get willEmail(): boolean {
+        return this.deliveryMode !== 'post' &&
+            this.selectedNewsletter !== undefined &&
+            canEmail(this.serverPost?.status, this.values.status);
+    }
+
+    private setNewsletters(newsletters: GhostNewsletter[]): void {
+        this.newsletters = newsletters;
+        if (!this.selectedNewsletter) {
+            this.selectedNewsletterSlug = newsletters[0]?.slug ?? '';
+        }
+        this.renderDelivery();
+    }
+
+    private renderDelivery(): void {
+        const el = this.deliveryEl;
+        if (!el) {
+            return;
+        }
+        el.empty();
+        if (this.newsletters.length === 0) {
+            this.deliveryMode = 'post';
+            this.refreshDelivery();
+            return;
+        }
+
+        const emailSetting = new Setting(el)
+            .setName('Email')
+            .addDropdown((dropdown) => dropdown
+                .addOption('post', 'Do not email')
+                .addOption('post_and_newsletter', 'Publish and email')
+                .addOption('newsletter_only', 'Email only')
+                .setValue(this.deliveryMode)
+                .onChange((value) => {
+                    this.deliveryMode = value as DeliveryMode;
+                    this.emailConfirmed = false;
+                    this.refreshPrimary();
+                }));
+
+        const describe = () => {
+            const newsletter = this.selectedNewsletter;
+            if (!newsletter) {
+                return;
+            }
+            const count = newsletter.count?.active_members;
+            emailSetting.setDesc(
+                count === undefined
+                    ? newsletter.name
+                    : `${newsletter.name} · ${count.toLocaleString()} ${count === 1 ? 'subscriber' : 'subscribers'}`
+            );
+        };
+        describe();
+
+        if (this.newsletters.length > 1) {
+            new Setting(el)
+                .setName('Newsletter')
+                .addDropdown((dropdown) => {
+                    for (const newsletter of this.newsletters) {
+                        dropdown.addOption(newsletter.slug, newsletter.name);
+                    }
+                    dropdown.setValue(this.selectedNewsletterSlug);
+                    dropdown.onChange((value) => {
+                        this.selectedNewsletterSlug = value;
+                        this.emailConfirmed = false;
+                        describe();
+                        this.refreshPrimary();
+                    });
+                });
+        }
+
+        this.refreshDelivery();
+        this.refreshPrimary();
+    }
+
+    /** Email is only on offer when the post is about to go out for the first time. */
+    private refreshDelivery(): void {
+        const available = this.newsletters.length > 0 && canEmail(this.serverPost?.status, this.values.status);
+        this.deliveryEl?.toggleClass('is-hidden', !available);
+    }
+
+    // ------------------------------------------------------------------
+    // Buttons, progress and errors
+    // ------------------------------------------------------------------
+
+    private refreshPrimary(): void {
+        const button = this.primaryButton;
+        if (!button) {
+            return;
+        }
+
+        if (this.busy) {
+            button.setText(this.isUpdate ? 'Updating...' : 'Publishing...');
+        } else if (this.uploadFailed && this.images.hasFailed) {
+            button.setText('Retry upload');
+        } else {
+            button.setText(publishButtonLabel({
+                serverStatus: this.serverPost?.status,
+                status: this.values.status,
+                scheduledAt: this.values.scheduledAt,
+                delivery: this.willEmail ? this.deliveryMode : 'post',
+                recipients: this.recipients,
+                conflict: this.conflict
+            }));
+        }
+
+        // Overwriting web edits is destructive, so the button looks the part
+        button.toggleClass('mod-warning', this.conflict && !this.busy);
+        button.toggleClass('mod-cta', !this.conflict || this.busy);
+        button.disabled = this.busy || this.images.hasBlockers;
+    }
+
+    /**
+     * Explain any image that blocks publishing (not in the vault, or failed
+     * to upload) and offer to publish without it.
+     */
+    private renderImageProblems(): void {
+        const el = this.imageProblemEl;
+        if (!el) {
+            return;
+        }
+        el.empty();
+
+        const problems = this.images.problems;
+        if (problems.length > 0) {
+            const callout = el.createDiv({ cls: 'ghosty-posty-callout is-error' });
+            const one = problems.length === 1;
+            const namesOf = (state: string) => problems.filter((p) => p.state === state).map((p) => p.name);
+
+            const missing = namesOf('missing');
+            if (missing.length > 0) {
+                callout.createDiv({ text: `${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} not in your vault.` });
+            }
+            const unsupported = namesOf('unsupported');
+            if (unsupported.length > 0) {
+                callout.createDiv({
+                    text: `${unsupported.join(', ')} ${unsupported.length === 1 ? 'is in a video format' : 'are in video formats'} Ghost does not accept. Convert to MP4 to include ${unsupported.length === 1 ? 'it' : 'them'}.`
+                });
+            }
+            const failed = namesOf('failed');
+            if (failed.length > 0) {
+                callout.createDiv({ text: `${failed.join(', ')} could not be uploaded.` });
+                callout.createDiv({
+                    cls: 'ghosty-posty-callout-detail',
+                    text: `${problems.find((p) => p.error)?.error ?? ''} The files that finished are kept, so a retry only sends what failed.`.trim()
+                });
+            }
+            if (missing.length > 0 || unsupported.length > 0) {
+                callout.createDiv({
+                    cls: 'ghosty-posty-callout-detail',
+                    text: `Fix the note and reopen this window, or publish without ${one ? 'it' : 'them'}.`
+                });
+            }
+
+            const skipButton = callout.createEl('button', { text: `Publish without ${one ? 'it' : 'them'}` });
+            skipButton.addEventListener('click', () => {
+                this.images.skipProblems();
+                this.uploadFailed = false;
+                this.renderImageProblems();
+            });
+        }
+
+        this.refreshPrimary();
+    }
+
+    private setBusy(busy: boolean): void {
+        this.busy = busy;
+        if (this.formEl) {
+            this.formEl.toggleClass('is-busy', busy);
+            this.formEl.inert = busy;
+        }
+        if (this.imageProblemEl) {
+            this.imageProblemEl.inert = busy;
+        }
+        if (this.cancelButton) {
+            this.cancelButton.disabled = busy;
+        }
+        if (!busy) {
+            this.progressEl?.hide();
+        }
+        this.refreshPrimary();
+    }
+
+    private setProgress(text: string, fraction: number): void {
+        this.progressEl?.show();
+        this.progressTextEl?.setText(text);
+        if (this.progressBarEl) {
+            this.progressBarEl.style.width = `${Math.round(Math.min(1, Math.max(0, fraction)) * 100)}%`;
+        }
+    }
+
+    private showError(message: string): void {
+        if (this.errorEl) {
+            this.errorEl.setText(message);
+            this.errorEl.show();
+        }
+    }
+
+    private clearError(): void {
+        this.errorEl?.hide();
+    }
+
+    // ------------------------------------------------------------------
+    // Publishing
+    // ------------------------------------------------------------------
+
+    private onPrimary(): void {
+        this.clearError();
+        this.values.tags = this.tagInput?.getTags() ?? this.values.tags;
+
+        if (this.values.title.trim() === '') {
+            this.showError('Add a title before publishing.');
+            return;
+        }
+        if (this.values.excerpt.trim().length > EXCERPT_MAX_LENGTH) {
+            this.showError(`The excerpt is too long. Ghost allows up to ${EXCERPT_MAX_LENGTH} characters.`);
+            return;
+        }
+        if (this.values.status === 'scheduled') {
+            const when = new Date(this.values.scheduledAt);
+            if (isNaN(when.getTime())) {
+                this.showError('Choose a date and time to schedule this post.');
+                return;
+            }
+            if (when <= new Date()) {
+                this.showError('The scheduled time has already passed. Choose a time in the future, or publish now.');
+                return;
+            }
+        }
+
+        // An email can't be recalled, so it always gets a second look.
+        if (this.willEmail && !this.emailConfirmed) {
+            this.showConfirm();
+            return;
+        }
+
+        void this.publish();
+    }
+
+    /**
+     * Swap the form for a confirmation that spells out who gets the email.
+     */
+    private showConfirm(): void {
+        const newsletter = this.selectedNewsletter;
+        if (!newsletter) {
+            return;
+        }
+        const people = formatPeople(this.recipients);
+        const emailOnly = this.deliveryMode === 'newsletter_only';
+        const scheduled = this.values.status === 'scheduled';
+        const when = scheduled ? formatWhen(this.values.scheduledAt) : '';
+        const title = this.values.title.trim();
+
+        const el = this.confirmEl;
+        el.empty();
+        el.createEl('h2', {
+            text: this.recipients === undefined ? 'Send this by email?' : `Send this to ${people}?`
+        });
+
+        let summary: string;
+        if (emailOnly) {
+            summary = scheduled
+                ? `"${title}" will be emailed to subscribers of ${newsletter.name} on ${when}. It will not appear on your site.`
+                : `"${title}" will be emailed to subscribers of ${newsletter.name} now. It will not appear on your site.`;
+        } else {
+            summary = scheduled
+                ? `"${title}" will be published on your site and emailed to subscribers of ${newsletter.name} on ${when}.`
+                : `"${title}" will be published on your site and emailed to subscribers of ${newsletter.name} now.`;
+        }
+        el.createEl('p', { text: summary });
+
+        const callout = el.createDiv({ cls: 'ghosty-posty-callout is-warning' });
+        callout.createDiv({
+            text: scheduled
+                ? 'Once the email goes out it cannot be unsent. Until then you can unschedule the post.'
+                : 'Emails cannot be unsent.'
+        });
+        if (!emailOnly) {
+            callout.createDiv({
+                cls: 'ghosty-posty-callout-detail',
+                text: 'You can still edit the version on your site afterwards.'
+            });
+        }
+
+        const footer = el.createDiv({ cls: 'ghosty-posty-buttons' });
+        const back = footer.createEl('button', { text: 'Go back' });
+        back.addEventListener('click', () => this.hideConfirm());
+
+        let confirmLabel = emailOnly ? 'Send email' : 'Send and publish';
+        if (scheduled) {
+            confirmLabel = 'Schedule it';
+        }
+        const confirm = footer.createEl('button', { text: confirmLabel, cls: 'mod-cta' });
+        confirm.addEventListener('click', () => {
+            this.emailConfirmed = true;
+            this.hideConfirm();
+            void this.publish();
+        });
+
+        this.mainEl.hide();
+        el.show();
+        back.focus();
+    }
+
+    private hideConfirm(): void {
+        this.confirmEl.hide();
+        this.mainEl.show();
+    }
+
+    private async publish(): Promise<void> {
+        this.clearError();
+        this.setBusy(true);
+
+        try {
+            // 1. Images
+            if (this.images.pendingCount > 0) {
+                const ok = await this.images.uploadAll(this.api, (done, total) => {
+                    const what = this.images.hasVideo ? 'files' : 'images';
+                    this.setProgress(`Uploading ${what}: ${done} of ${total} done`, total > 0 ? done / total : 1);
+                });
+                void this.plugin.saveCache();
+                if (!ok) {
+                    this.uploadFailed = true;
+                    this.setBusy(false);
+                    this.renderImageProblems();
+                    return;
+                }
+            }
+            this.uploadFailed = false;
+
+            // 2. The post itself
+            this.setProgress(this.isUpdate ? 'Sending changes to Ghost...' : 'Sending the post to Ghost...', 1);
+
+            const willEmail = this.willEmail;
+            const recipients = this.recipients;
+            const payload = this.buildPayload(willEmail);
+            const options: PublishOptions = {};
+            if (willEmail) {
+                options.newsletterSlug = this.selectedNewsletterSlug;
+            }
+
+            const existing = this.metadata.existing;
+            const result = existing
+                ? await this.api.updatePost(existing.id, payload, options)
+                : await this.api.createPost(payload, options);
+
+            if (!result.success) {
+                this.setBusy(false);
+                this.showError(result.error);
+                return;
+            }
+
+            this.onSuccess({
+                post: result.post,
+                previousStatus: this.serverPost?.status,
+                emailed: willEmail,
+                recipients: willEmail ? recipients : undefined,
+                values: { ...this.values }
+            });
+            this.close();
+        } catch (error) {
+            this.setBusy(false);
+            this.showError(error instanceof Error ? error.message : 'Something went wrong while publishing.');
+        }
+    }
+
+    private buildPayload(willEmail: boolean): GhostPostPayload {
+        const { values } = this;
+
+        let html = replaceImageUrls(this.conversionResult.html, this.images.urlMap);
+        html = removeImages(html, this.images.skippedPaths);
+        // Videos become Ghost video cards; any that were left out are dropped
+        html = renderVideos(html, (path) => this.images.videoFor(path));
+
+        // An email-only post has no status to change, so leave it out.
+        const sendStatus = this.serverPost?.status !== 'sent';
+
+        // Publish date: the picker when scheduling. Otherwise a past date from
+        // frontmatter can backdate a post, but only one that isn't live yet.
+        let publishedAt: string | undefined;
+        if (sendStatus && values.status === 'scheduled') {
+            publishedAt = new Date(values.scheduledAt).toISOString();
+        } else if (values.status === 'published' && this.serverPost?.status !== 'published' && this.metadata.publishedAt) {
+            if (new Date(this.metadata.publishedAt) <= new Date()) {
+                publishedAt = this.metadata.publishedAt;
+            }
+        }
+
+        const featuredImage = this.images.featured;
+        const excerpt = values.excerpt.trim();
+
+        const post: GhostPost = {
+            title: values.title.trim(),
+            html,
+            // Always sent, so the last tag can be removed and a post un-featured.
+            tags: values.tags.map((name) => ({ name })),
+            featured: values.featured,
+            custom_excerpt: excerpt === '' ? null : excerpt,
+            ...(sendStatus && { status: values.status }),
+            ...(values.visibility !== 'tiers' && { visibility: values.visibility }),
+            ...(values.slug && { slug: values.slug }),
+            ...(publishedAt && { published_at: publishedAt }),
+            ...(featuredImage && { feature_image: featuredImage.url }),
+            ...(featuredImage && featuredImage.alt && {
+                feature_image_alt: featuredImage.alt.slice(0, FEATURE_ALT_MAX_LENGTH)
+            }),
+            ...(willEmail && this.deliveryMode === 'newsletter_only' && { email_only: true }),
+            // Ghost needs the current updated_at on an update to detect collisions.
+            ...(this.serverPost && { updated_at: this.serverPost.updated_at })
+        };
+
+        return { posts: [post] };
     }
 }

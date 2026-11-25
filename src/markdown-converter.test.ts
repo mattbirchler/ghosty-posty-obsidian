@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { convertMarkdownToHtml, replaceImageUrls } from './markdown-converter';
+import { convertMarkdownToHtml, replaceImageUrls, removeImages, renderVideos, stripComments } from './markdown-converter';
 
 test('converts basic markdown to HTML', () => {
     const { html } = convertMarkdownToHtml('# Hello\n\nSome **bold** text.');
@@ -136,4 +136,136 @@ test('replaceImageUrls leaves unrelated URLs untouched', () => {
     const map = new Map([['images/cat.png', 'https://cdn.ghost.io/cat.png']]);
     const result = replaceImageUrls(html, map);
     assert.equal(result, html);
+});
+
+// --- Obsidian comments ---------------------------------------------------
+
+test('strips inline and multi-line Obsidian comments', () => {
+    const md = 'Public %%private aside%% text.\n\n%%\nTODO: rewrite this\n%%\n\nMore public text.';
+    const { html } = convertMarkdownToHtml(md);
+    assert.ok(!html.includes('private aside'));
+    assert.ok(!html.includes('TODO'));
+    assert.ok(!html.includes('%%'));
+    assert.match(html, /Public\s+text\./);
+    assert.match(html, /More public text\./);
+});
+
+test('strips comments that contain inline code', () => {
+    assert.equal(stripComments('a %%see `foo` here%% b'), 'a  b');
+});
+
+test('leaves %% inside code blocks and inline code alone', () => {
+    const md = 'Use `%%` to open and `%%` to close.\n\n```mermaid\n%% a diagram comment\ngraph TD\n%% another\n```\n';
+    assert.equal(stripComments(md), md);
+});
+
+test('leaves an unclosed %% as written', () => {
+    assert.equal(stripComments('100%% sure'), '100%% sure');
+});
+
+test('does not upload images that only appear inside a comment', () => {
+    const { images } = convertMarkdownToHtml('Intro.\n\n%%![[draft-idea.png]]%%');
+    assert.equal(images.length, 0);
+});
+
+// --- Image sizes and alt text --------------------------------------------
+
+test('does not turn an embed resize hint into alt text', () => {
+    const { images, html } = convertMarkdownToHtml('Intro.\n\n![[shot.png|400]]\n\n![[wide.png|640x480]]');
+    assert.equal(images[0].alt, '');
+    assert.equal(images[1].alt, '');
+    assert.match(html, /<img src="shot\.png" alt="">/);
+});
+
+test('keeps real alt text when a resize hint follows it', () => {
+    const { images, html } = convertMarkdownToHtml('Intro.\n\n![[shot.png|Settings panel|400]]\n\n![A chart|300](chart.png)');
+    assert.equal(images[0].alt, 'A chart');
+    assert.equal(images[1].alt, 'Settings panel');
+    assert.match(html, /alt="Settings panel"/);
+    assert.match(html, /alt="A chart"/);
+    assert.ok(!html.includes('400') && !html.includes('300'));
+});
+
+test('keeps the alt text of a featured image', () => {
+    const { featuredImage } = convertMarkdownToHtml('![[hero.png|My desk at dusk]]\n\nBody.');
+    assert.equal(featuredImage?.alt, 'My desk at dusk');
+});
+
+// --- Non-image embeds ----------------------------------------------------
+
+test('drops non-image embeds and warns about them', () => {
+    const { html, warnings } = convertMarkdownToHtml('Intro.\n\n![[Other note]]\n\n![[talk.mp3]]\n\nOutro.');
+    assert.ok(!html.includes('<img'), 'no broken image should be rendered');
+    assert.ok(!html.includes('Other note'));
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /Other note, talk\.mp3/);
+});
+
+test('has no warnings for a note with only image embeds', () => {
+    const { warnings } = convertMarkdownToHtml('Intro.\n\n![[a.png]]');
+    assert.equal(warnings.length, 0);
+});
+
+// --- removeImages --------------------------------------------------------
+
+test('removeImages drops the image and its empty paragraph', () => {
+    const { html } = convertMarkdownToHtml('Before.\n\n![[my photo.png]]\n\nAfter ![[keep.png]].');
+    const result = removeImages(html, ['my photo.png']);
+    assert.ok(!result.includes('my%20photo.png'));
+    assert.ok(!/<p>\s*<\/p>/.test(result));
+    assert.match(result, /keep\.png/);
+    assert.match(result, /Before\./);
+});
+
+// --- Videos --------------------------------------------------------------
+
+test('collects local videos separately from images', () => {
+    const md = 'Intro.\n\n![[demo clip.mp4]]\n\n![a walkthrough](media/tour.webm)\n\n![[shot.png]]';
+    const { videos, images, featuredImage, warnings, html } = convertMarkdownToHtml(md);
+    assert.deepEqual(videos.map((v) => v.path), ['demo clip.mp4', 'media/tour.webm']);
+    assert.deepEqual(images.map((i) => i.path), ['shot.png']);
+    assert.equal(featuredImage, null);
+    assert.equal(warnings.length, 0);
+    assert.ok(!html.includes('<img src="demo'), 'a video must not be rendered as an image');
+    assert.ok(!html.includes('tour.webm"'), 'a video must not be rendered as an image');
+});
+
+test('a first-line video is not treated as the featured image', () => {
+    const { featuredImage, videos } = convertMarkdownToHtml('![[intro.mp4]]\n\nBody.');
+    assert.equal(featuredImage, null);
+    assert.equal(videos.length, 1);
+});
+
+test('leaves remote videos alone', () => {
+    const { videos } = convertMarkdownToHtml('Intro.\n\n![](https://example.com/clip.mp4)');
+    assert.equal(videos.length, 0);
+});
+
+test('renderVideos turns a placeholder into a Ghost video card', () => {
+    const { html } = convertMarkdownToHtml('Before.\n\n![[demo clip.mp4]]\n\nAfter.');
+    const result = renderVideos(html, (path) => path === 'demo clip.mp4'
+        ? { url: 'https://cdn.example/v.mp4', thumbnailUrl: 'https://cdn.example/v_thumb.jpg', width: 1920, height: 1080, duration: 75.4 }
+        : undefined);
+    // The pieces Ghost's importer reads: figure class, video in its container, size, duration, thumbnail
+    assert.match(result, /<figure class="kg-card kg-video-card kg-width-regular" data-kg-thumbnail="https:\/\/cdn\.example\/v_thumb\.jpg">/);
+    assert.match(result, /<div class="kg-video-container"><video src="https:\/\/cdn\.example\/v\.mp4" width="1920" height="1080"/);
+    assert.match(result, /<div class="kg-video-duration">1:15<\/div>/);
+    assert.ok(!result.includes('ghosty-video'));
+    assert.match(result, /Before\./);
+    assert.match(result, /After\./);
+});
+
+test('renderVideos copes with a video that could not be measured', () => {
+    const { html } = convertMarkdownToHtml('![[clip.mp4]]\n\nText.');
+    const result = renderVideos(html, () => ({ url: 'https://cdn.example/v.mp4' }));
+    assert.match(result, /<video src="https:\/\/cdn\.example\/v\.mp4" playsinline/);
+    assert.ok(!result.includes('kg-video-duration'));
+    assert.ok(!result.includes('data-kg-thumbnail'));
+});
+
+test('renderVideos drops a video that was left out', () => {
+    const { html } = convertMarkdownToHtml('Before.\n\n![[clip.mov]]\n\nAfter.');
+    const result = renderVideos(html, () => undefined);
+    assert.ok(!result.includes('ghosty-video'));
+    assert.ok(!result.includes('<figure'));
 });
