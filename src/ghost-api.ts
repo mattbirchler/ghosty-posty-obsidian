@@ -1,5 +1,6 @@
 import { requestUrl, RequestUrlResponse } from 'obsidian';
-import { GhostPostPayload, GhostPostResponse, GhostPostResult, GhostSiteResponse, GhostErrorResponse, GhostImageUploadResponse, GhostNewslettersResponse, GhostNewsletter } from './types';
+import { describeGhostError } from './ghost-errors';
+import { GhostPostPayload, GhostPostResponse, GhostPostResult, GhostSiteResponse, GhostImageUploadResponse, GhostNewslettersResponse, GhostNewsletter, GhostTagsResponse } from './types';
 
 /** Options controlling how a create/update is delivered. */
 export interface PublishOptions {
@@ -10,7 +11,19 @@ export interface PublishOptions {
 /** A successful result carrying the affected post, or a failure with a message. */
 export type PostResult =
     | { success: true; post: GhostPostResult }
-    | { success: false; error: string };
+    | { success: false; error: string; status?: number };
+
+/**
+ * Read a response body as JSON without throwing when it isn't JSON
+ * (for example an HTML error page from a proxy).
+ */
+function safeJson(response: RequestUrlResponse): unknown {
+    try {
+        return response.json as unknown;
+    } catch {
+        return undefined;
+    }
+}
 
 /**
  * Convert a hex string to Uint8Array
@@ -131,6 +144,8 @@ export class GhostAPI {
         const options: Parameters<typeof requestUrl>[0] = {
             url,
             method,
+            // Don't throw on 4xx/5xx: we want to read Ghost's own error message.
+            throw: false,
             headers: {
                 'Authorization': token,
                 'Content-Type': 'application/json',
@@ -154,16 +169,15 @@ export class GhostAPI {
             const response = await this.request('GET', '/site/');
 
             if (response.status >= 200 && response.status < 300) {
-                const data = response.json as GhostSiteResponse;
+                const data = safeJson(response) as GhostSiteResponse | undefined;
                 return {
                     success: true,
-                    siteName: data.site?.title || 'Unknown Site'
+                    siteName: data?.site?.title || 'Unknown Site'
                 };
             } else {
-                const errorData = response.json as GhostErrorResponse;
                 return {
                     success: false,
-                    error: errorData.errors?.[0]?.message || `HTTP ${response.status}`
+                    error: describeGhostError(response.status, safeJson(response))
                 };
             }
         } catch (error) {
@@ -220,11 +234,13 @@ export class GhostAPI {
     }
 
     /**
-     * Fetch a single post by id, including its rendered HTML content.
+     * Fetch a single post by id. Pass `withHtml` to include the rendered
+     * content (needed for sync, not for the publish modal).
      */
-    async getPost(id: string): Promise<PostResult> {
+    async getPost(id: string, withHtml = false): Promise<PostResult> {
         try {
-            const response = await this.request('GET', `/posts/${id}/?formats=html`);
+            const query = withHtml ? '?formats=html&include=tags' : '?include=tags';
+            const response = await this.request('GET', `/posts/${id}/${query}`);
             return this.parsePostResponse(response);
         } catch (error) {
             return {
@@ -240,10 +256,32 @@ export class GhostAPI {
      */
     async getNewsletters(): Promise<GhostNewsletter[]> {
         try {
-            const response = await this.request('GET', '/newsletters/?filter=status:active&limit=all');
+            // count.active_members gives the subscriber count shown before sending.
+            // If a Ghost version doesn't return it, the count is simply omitted.
+            const response = await this.request(
+                'GET',
+                '/newsletters/?filter=status:active&limit=all&include=count.active_members'
+            );
             if (response.status >= 200 && response.status < 300) {
-                const data = response.json as GhostNewslettersResponse;
-                return data.newsletters ?? [];
+                const data = safeJson(response) as GhostNewslettersResponse | undefined;
+                return data?.newsletters ?? [];
+            }
+            return [];
+        } catch {
+            return [];
+        }
+    }
+
+    /**
+     * List the names of every tag on the site (for tag autocomplete).
+     * Returns an empty list on failure so the tag field still works as free text.
+     */
+    async getTags(): Promise<string[]> {
+        try {
+            const response = await this.request('GET', '/tags/?limit=all&fields=name&order=name%20asc');
+            if (response.status >= 200 && response.status < 300) {
+                const data = safeJson(response) as GhostTagsResponse | undefined;
+                return (data?.tags ?? []).map((t) => t.name).filter((n) => typeof n === 'string' && n !== '');
             }
             return [];
         } catch {
@@ -256,17 +294,17 @@ export class GhostAPI {
      */
     private parsePostResponse(response: RequestUrlResponse): PostResult {
         if (response.status >= 200 && response.status < 300) {
-            const data = response.json as GhostPostResponse;
-            const post = data.posts?.[0];
+            const data = safeJson(response) as GhostPostResponse | undefined;
+            const post = data?.posts?.[0];
             if (!post) {
                 return { success: false, error: 'Ghost returned no post data' };
             }
             return { success: true, post };
         }
-        const errorData = response.json as GhostErrorResponse;
         return {
             success: false,
-            error: errorData.errors?.[0]?.message || `HTTP ${response.status}`
+            error: describeGhostError(response.status, safeJson(response)),
+            status: response.status
         };
     }
 
@@ -286,7 +324,8 @@ export class GhostAPI {
                 'png': 'image/png',
                 'gif': 'image/gif',
                 'webp': 'image/webp',
-                'svg': 'image/svg+xml'
+                'svg': 'image/svg+xml',
+                'bmp': 'image/bmp'
             };
             const contentType = mimeTypes[ext] || 'application/octet-stream';
 
@@ -311,6 +350,7 @@ export class GhostAPI {
             const response = await requestUrl({
                 url,
                 method: 'POST',
+                throw: false,
                 headers: {
                     'Authorization': token,
                     'Content-Type': `multipart/form-data; boundary=${boundary}`
@@ -319,8 +359,8 @@ export class GhostAPI {
             });
 
             if (response.status >= 200 && response.status < 300) {
-                const data = response.json as GhostImageUploadResponse;
-                if (data.images && data.images.length > 0) {
+                const data = safeJson(response) as GhostImageUploadResponse | undefined;
+                if (data?.images && data.images.length > 0) {
                     return {
                         success: true,
                         url: data.images[0].url
@@ -332,10 +372,9 @@ export class GhostAPI {
                     };
                 }
             } else {
-                const errorData = response.json as GhostErrorResponse;
                 return {
                     success: false,
-                    error: errorData.errors?.[0]?.message || `HTTP ${response.status}`
+                    error: describeGhostError(response.status, safeJson(response))
                 };
             }
         } catch (error) {

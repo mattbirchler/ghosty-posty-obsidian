@@ -69,15 +69,97 @@ function isLocalPath(path: string): boolean {
     return !path.startsWith('http://') && !path.startsWith('https://') && !path.startsWith('data:');
 }
 
-/**
- * Extract all images from markdown content
- * Handles both ![alt](path) and ![[path]] syntax
- */
-function extractAllImages(markdown: string): ImageReference[] {
-    const images: ImageReference[] = [];
+const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'];
 
-    // Strip frontmatter first
-    const { content } = stripFrontmatter(markdown);
+function isImagePath(path: string): boolean {
+    const ext = path.split('.').pop()?.toLowerCase() || '';
+    return IMAGE_EXTENSIONS.includes(ext);
+}
+
+/**
+ * Remove Obsidian comments (%%like this%%, inline or spanning lines) so notes
+ * to self never reach the published post. Code blocks and inline code are
+ * left untouched, since `%%` is real syntax in some languages.
+ */
+export function stripComments(markdown: string): string {
+    let out = '';
+    let i = 0;
+    const n = markdown.length;
+
+    while (i < n) {
+        const atLineStart = i === 0 || markdown[i - 1] === '\n';
+
+        // Fenced code block: copy through to its closing fence.
+        if (atLineStart) {
+            const fence = /^ {0,3}(`{3,}|~{3,})/.exec(markdown.slice(i, i + 16));
+            if (fence) {
+                const closeRe = new RegExp(`\\n {0,3}${fence[1][0]}{${fence[1].length},}[ \\t]*(?=\\n|$)`, 'g');
+                closeRe.lastIndex = i + fence[0].length;
+                const close = closeRe.exec(markdown);
+                const end = close ? close.index + close[0].length : n;
+                out += markdown.slice(i, end);
+                i = end;
+                continue;
+            }
+        }
+
+        // Inline code: copy through to the matching run of backticks.
+        if (markdown[i] === '`') {
+            let j = i;
+            while (markdown[j] === '`') {
+                j++;
+            }
+            const ticks = markdown.slice(i, j);
+            const close = markdown.indexOf(ticks, j);
+            const paragraphEnd = markdown.indexOf('\n\n', j);
+            if (close !== -1 && (paragraphEnd === -1 || close < paragraphEnd)) {
+                out += markdown.slice(i, close + ticks.length);
+                i = close + ticks.length;
+            } else {
+                out += ticks;
+                i = j;
+            }
+            continue;
+        }
+
+        // Comment: skip to the closing %%. An unclosed %% is left as written.
+        if (markdown[i] === '%' && markdown[i + 1] === '%') {
+            const close = markdown.indexOf('%%', i + 2);
+            if (close !== -1) {
+                i = close + 2;
+                continue;
+            }
+        }
+
+        out += markdown[i];
+        i++;
+    }
+
+    return out;
+}
+
+/**
+ * Clean the text after the pipe in an image. Obsidian uses it for both alt
+ * text and resize hints (![[shot.png|400]] or |400x300), and a bare size is
+ * not something a screen reader should announce.
+ */
+function cleanAltText(raw: string | undefined): string {
+    if (!raw) {
+        return '';
+    }
+    return raw
+        .split('|')
+        .map((part) => part.trim())
+        .filter((part) => part !== '' && !/^\d+(x\d+)?$/.test(part))
+        .join(' ');
+}
+
+/**
+ * Extract all local images from markdown content (frontmatter and comments
+ * already removed). Handles both ![alt](path) and ![[path]] syntax.
+ */
+function extractAllImages(content: string): ImageReference[] {
+    const images: ImageReference[] = [];
 
     // Find the first non-empty line to determine featured image
     const lines = content.split(/\r?\n/);
@@ -89,47 +171,38 @@ function extractAllImages(markdown: string): ImageReference[] {
         }
     }
 
+    const isOnFirstLine = (index: number): boolean => {
+        const lineNumber = content.substring(0, index).split(/\r?\n/).length - 1;
+        return lineNumber === firstContentLineIndex;
+    };
+
     // Match standard markdown images: ![alt](path)
     const markdownImageRegex = /!\[([^\]]*)\]\(([^)]+)\)/g;
     let match;
     while ((match = markdownImageRegex.exec(content)) !== null) {
         const path = match[2];
         if (isLocalPath(path)) {
-            // Determine if this is on the first content line
-            const beforeMatch = content.substring(0, match.index);
-            const lineNumber = beforeMatch.split(/\r?\n/).length - 1;
-            const isFirstLine = lineNumber === firstContentLineIndex;
-
             images.push({
                 originalSyntax: match[0],
                 path: path,
-                alt: match[1],
+                alt: cleanAltText(match[1]),
                 isEmbed: false,
-                isFirstLine
+                isFirstLine: isOnFirstLine(match.index)
             });
         }
     }
 
-    // Match Obsidian embed images: ![[path]] or ![[path|alt]]
+    // Match Obsidian embed images: ![[path]] or ![[path|alt]] or ![[path|400]]
     const embedImageRegex = /!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
     while ((match = embedImageRegex.exec(content)) !== null) {
         const path = match[1];
-        // Check if it looks like an image file
-        const ext = path.split('.').pop()?.toLowerCase() || '';
-        const imageExtensions = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'];
-
-        if (imageExtensions.includes(ext)) {
-            // Determine if this is on the first content line
-            const beforeMatch = content.substring(0, match.index);
-            const lineNumber = beforeMatch.split(/\r?\n/).length - 1;
-            const isFirstLine = lineNumber === firstContentLineIndex;
-
+        if (isImagePath(path)) {
             images.push({
                 originalSyntax: match[0],
                 path: path,
-                alt: match[2] || '',
+                alt: cleanAltText(match[2]),
                 isEmbed: true,
-                isFirstLine
+                isFirstLine: isOnFirstLine(match.index)
             });
         }
     }
@@ -152,14 +225,28 @@ function convertWikiLinks(markdown: string): string {
  * Convert Obsidian image embeds to standard markdown syntax
  * ![[image.png]] -> ![](image.png)
  * ![[image.png|alt text]] -> ![alt text](image.png)
- * Paths with spaces are URL-encoded so markdown parsers handle them correctly
+ * ![[image.png|400]] -> ![](image.png)
+ * Paths with spaces are URL-encoded so markdown parsers handle them correctly.
+ * Embeds that are not images (other notes, PDFs, video) can't be published, so
+ * they are removed and reported through `skipped`.
  */
-function convertImageEmbeds(markdown: string): string {
+function convertEmbeds(markdown: string, skipped: string[]): string {
     return markdown.replace(/!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_match: string, path: string, alt: string | undefined) => {
+        if (!isImagePath(path)) {
+            skipped.push(path.trim());
+            return '';
+        }
         // URL-encode the path to handle spaces and special characters
         const encodedPath = encodeURI(path);
-        return `![${alt || ''}](${encodedPath})`;
+        return `![${cleanAltText(alt)}](${encodedPath})`;
     });
+}
+
+/**
+ * Strip resize hints from standard markdown images: ![alt|400](path) -> ![alt](path)
+ */
+function cleanMarkdownImageAlts(markdown: string): string {
+    return markdown.replace(/!\[([^\]]*\|[^\]]*)\]\(/g, (_match: string, alt: string) => `![${cleanAltText(alt)}](`);
 }
 
 export interface ConversionResult {
@@ -175,8 +262,11 @@ export interface ConversionResult {
 export function convertMarkdownToHtml(markdown: string): ConversionResult {
     const warnings: string[] = [];
 
+    // Drop frontmatter and private comments before anything else looks at the note
+    let processed = stripComments(stripFrontmatter(markdown).content);
+
     // Extract all images first
-    const allImages = extractAllImages(markdown);
+    const allImages = extractAllImages(processed);
 
     // Find featured image (first-line image)
     const featuredImage = allImages.find(img => img.isFirstLine) || null;
@@ -185,9 +275,6 @@ export function convertMarkdownToHtml(markdown: string): ConversionResult {
     const contentImages = featuredImage
         ? allImages.filter(img => !img.isFirstLine)
         : allImages;
-
-    // Process markdown
-    let { content: processed } = stripFrontmatter(markdown);
 
     // Remove the featured image from content if it exists
     if (featuredImage) {
@@ -208,8 +295,18 @@ export function convertMarkdownToHtml(markdown: string): ConversionResult {
         processed = filteredLines.join('\n');
     }
 
-    // Convert Obsidian embeds to standard markdown (for images)
-    processed = convertImageEmbeds(processed);
+    // Convert Obsidian image embeds to standard markdown; drop other embeds
+    const skippedEmbeds: string[] = [];
+    processed = convertEmbeds(processed, skippedEmbeds);
+    processed = cleanMarkdownImageAlts(processed);
+    if (skippedEmbeds.length > 0) {
+        const names = skippedEmbeds.join(', ');
+        warnings.push(
+            skippedEmbeds.length === 1
+                ? `An embed that is not an image was left out: ${names}`
+                : `${skippedEmbeds.length} embeds that are not images were left out: ${names}`
+        );
+    }
 
     // Convert wiki links to plain text
     processed = convertWikiLinks(processed);
@@ -245,4 +342,23 @@ export function replaceImageUrls(html: string, urlMap: Map<string, string>): str
     }
 
     return result;
+}
+
+/**
+ * Remove <img> tags for the given local paths from the HTML (used when the
+ * user chooses to publish without an image that could not be uploaded).
+ */
+export function removeImages(html: string, paths: string[]): string {
+    let result = html;
+
+    for (const localPath of paths) {
+        for (const pathVariant of [localPath, encodeURI(localPath)]) {
+            const escapedPath = pathVariant.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const regex = new RegExp(`<img[^>]*src=["']${escapedPath}["'][^>]*>`, 'g');
+            result = result.replace(regex, '');
+        }
+    }
+
+    // Drop paragraphs left empty by the removal
+    return result.replace(/<p>\s*<\/p>\n?/g, '');
 }
