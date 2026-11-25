@@ -5,18 +5,52 @@ import {
     PostMetadata,
     PostStatus,
     PostVisibility,
+    GhostNewsletter,
     GhostPostRef,
     GhostPostResult,
     FRONTMATTER_KEYS
 } from './types';
 import { GhostyPostySettingTab } from './settings';
-import { PublishModal } from './publish-modal';
+import { PublishModal, PublishResult } from './publish-modal';
 import { SyncModal } from './sync-modal';
 import { GhostAPI } from './ghost-api';
-import { convertMarkdownToHtml } from './markdown-converter';
+import { ImageMemory } from './image-list';
+import { convertMarkdownToHtml, stripFrontmatter } from './markdown-converter';
+import { editorUrl, hashContent, shouldArchive, successMessage } from './publish-logic';
+
+/**
+ * Things the plugin remembers between sessions that aren't settings. Stored
+ * under `cache` in the plugin's data file and safe to delete.
+ */
+interface PluginCache {
+    /** The Ghost site this cache belongs to; it is cleared if the URL changes. */
+    site: string;
+    /** Vault image path -> where it lives on Ghost, valid while the file is unchanged. */
+    images: Record<string, { mtime: number; size: number; url: string }>;
+    /** Ghost post id -> fingerprint of the note body when it was last sent or synced. */
+    pushed: Record<string, string>;
+    newsletters: GhostNewsletter[];
+    tags: string[];
+}
+
+function emptyCache(site: string): PluginCache {
+    return { site, images: {}, pushed: {}, newsletters: [], tags: [] };
+}
 
 export default class GhostyPostyPlugin extends Plugin {
     settings: GhostyPostySettings;
+    private cache: PluginCache = emptyCache('');
+
+    /** Remembers which images are already on Ghost so updates skip them. */
+    readonly imageMemory: ImageMemory = {
+        lookup: (file) => {
+            const entry = this.cache.images[file.path];
+            return entry && entry.mtime === file.stat.mtime && entry.size === file.stat.size ? entry.url : undefined;
+        },
+        remember: (file, url) => {
+            this.cache.images[file.path] = { mtime: file.stat.mtime, size: file.stat.size, url };
+        }
+    };
 
     async onload() {
         await this.loadSettings();
@@ -81,12 +115,62 @@ export default class GhostyPostyPlugin extends Plugin {
     }
 
     async loadSettings() {
-        const data = (await this.loadData()) as Partial<GhostyPostySettings> | null;
-        this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
+        const data = ((await this.loadData()) ?? {}) as Partial<GhostyPostySettings> & { cache?: Partial<PluginCache> };
+        const { cache, ...settings } = data;
+        this.settings = Object.assign({}, DEFAULT_SETTINGS, settings);
+        this.cache = Object.assign(emptyCache(this.settings.ghostUrl), cache);
+        this.checkCacheSite();
     }
 
     async saveSettings() {
-        await this.saveData(this.settings);
+        this.checkCacheSite();
+        await this.saveData({ ...this.settings, cache: this.cache });
+    }
+
+    async saveCache() {
+        await this.saveData({ ...this.settings, cache: this.cache });
+    }
+
+    /** Uploaded image URLs, tags and newsletters belong to one site only. */
+    private checkCacheSite(): void {
+        if (this.cache.site !== this.settings.ghostUrl) {
+            this.cache = emptyCache(this.settings.ghostUrl);
+        }
+    }
+
+    createApi(): GhostAPI {
+        return new GhostAPI(this.settings.ghostUrl, this.settings.apiKey);
+    }
+
+    /** The site's newsletters and tags as last seen, for instant display. */
+    get siteCache(): { newsletters: GhostNewsletter[]; tags: string[] } {
+        return this.cache;
+    }
+
+    async refreshNewsletters(): Promise<GhostNewsletter[]> {
+        const result = await this.createApi().getNewsletters();
+        if (!result.success) {
+            return this.cache.newsletters;
+        }
+        const newsletters = result.newsletters.map(({ id, name, slug, status, count }) => ({ id, name, slug, status, count }));
+        if (JSON.stringify(newsletters) !== JSON.stringify(this.cache.newsletters)) {
+            this.cache.newsletters = newsletters;
+            void this.saveCache();
+        }
+        return newsletters;
+    }
+
+    async refreshTags(): Promise<string[]> {
+        const result = await this.createApi().getTags();
+        if (!result.success) {
+            return this.cache.tags;
+        }
+        if (JSON.stringify(result.tags) !== JSON.stringify(this.cache.tags)) {
+            // Replace in place: open tag inputs read from this same array object
+            this.cache.tags.splice(0, this.cache.tags.length, ...result.tags);
+            void this.saveCache();
+        }
+        return this.cache.tags;
     }
 
     /**
@@ -164,13 +248,14 @@ export default class GhostyPostyPlugin extends Plugin {
         // Get slug from frontmatter
         const slug = typeof frontmatter.slug === 'string' ? frontmatter.slug : undefined;
 
-        // Get tags from frontmatter
-        let tags: string[] = [];
+        // Tags from frontmatter. Left undefined when the note has no tags
+        // property, so an update keeps the tags that are on Ghost.
+        let tags: string[] | undefined;
         if (Array.isArray(frontmatter.tags)) {
             tags = frontmatter.tags.map(String);
         } else if (typeof frontmatter.tags === 'string') {
             // Handle comma-separated string
-            tags = frontmatter.tags.split(',').map((t) => t.trim());
+            tags = frontmatter.tags.split(',').map((t) => t.trim()).filter((t) => t !== '');
         }
 
         // Determine status and scheduled date
@@ -186,7 +271,9 @@ export default class GhostyPostyPlugin extends Plugin {
             const date = new Date(scheduledDate);
             const now = new Date();
 
-            if (date > now) {
+            if (isNaN(date.getTime())) {
+                // Not a date we can read: ignore it
+            } else if (date > now) {
                 // Future date - schedule the post
                 status = 'scheduled';
                 publishedAt = date.toISOString();
@@ -196,12 +283,14 @@ export default class GhostyPostyPlugin extends Plugin {
             }
         }
 
-        // Visibility (public | members | paid); defaults to public
+        // Visibility (public | members | paid)
         const rawVisibility = frontmatter.visibility;
-        const visibility: PostVisibility =
+        const visibility: PostVisibility | undefined =
             rawVisibility === 'members' || rawVisibility === 'paid' || rawVisibility === 'public'
                 ? rawVisibility
-                : 'public';
+                : undefined;
+
+        const rawExcerpt = frontmatter.excerpt ?? frontmatter.custom_excerpt;
 
         return {
             title,
@@ -210,6 +299,8 @@ export default class GhostyPostyPlugin extends Plugin {
             status,
             publishedAt,
             visibility,
+            excerpt: typeof rawExcerpt === 'string' ? rawExcerpt : undefined,
+            featured: typeof frontmatter.featured === 'boolean' ? frontmatter.featured : undefined,
             existing: this.getExistingRef(file)
         };
     }
@@ -239,18 +330,16 @@ export default class GhostyPostyPlugin extends Plugin {
             // Get metadata from frontmatter
             const metadata = this.getPostMetadata(file);
 
-            // Show the confirmation modal
             new PublishModal(
-                this.app,
-                this.app.vault,
-                this.app.metadataCache,
+                this,
                 file,
                 metadata,
                 conversionResult,
-                this.settings.ghostUrl,
-                this.settings.apiKey,
-                (post, wasCreate) => {
-                    void this.onPublishSuccess(file, post, wasCreate);
+                (result) => {
+                    void this.onPublishSuccess(file, result);
+                },
+                () => {
+                    void this.syncNote(file);
                 }
             ).open();
         } catch (error) {
@@ -259,30 +348,117 @@ export default class GhostyPostyPlugin extends Plugin {
     }
 
     /**
-     * After a successful publish/update: record the post reference in frontmatter,
-     * and archive the note (only on first publish).
+     * After a successful publish/update: record the post in frontmatter,
+     * archive the note if it's time to, and tell the user what happened.
      */
-    private async onPublishSuccess(file: TFile, post: GhostPostResult, wasCreate: boolean): Promise<void> {
-        await this.writePostRef(file, post);
-        if (wasCreate) {
-            await this.archiveNote(file);
+    private async onPublishSuccess(file: TFile, result: PublishResult): Promise<void> {
+        const { post, previousStatus } = result;
+
+        await this.writePostRef(file, result);
+        await this.rememberPushed(file, post.id);
+
+        let archivedTo: string | undefined;
+        if (shouldArchive('first-send', { status: post.status, previousStatus })) {
+            archivedTo = await this.archiveNote(file);
         }
+
+        const message = successMessage({
+            status: post.status,
+            previousStatus,
+            publishedAt: post.published_at,
+            emailed: result.emailed,
+            recipients: result.recipients,
+            archivedTo
+        });
+        this.showPostNotice(message, post);
     }
 
     /**
-     * Store the Ghost post id/url/updated_at in the note's frontmatter so future
-     * publishes update the same post and sync can detect server-side changes.
+     * A notice that says what happened and offers the obvious next steps.
      */
-    private async writePostRef(file: TFile, post: GhostPostResult): Promise<void> {
+    private showPostNotice(message: string, post: GhostPostResult): void {
+        const fragment = createFragment();
+        fragment.createDiv({ text: message });
+
+        const links = fragment.createDiv({ cls: 'ghosty-posty-notice-links' });
+        const addLink = (label: string, onClick: () => void) => {
+            const link = links.createEl('a', { text: label, href: '#' });
+            link.addEventListener('click', (evt) => {
+                evt.preventDefault();
+                onClick();
+            });
+        };
+
+        if (post.status === 'published') {
+            addLink('Open post', () => window.open(post.url));
+            addLink('Copy link', () => {
+                void navigator.clipboard.writeText(post.url).then(() => new Notice('Link copied'));
+            });
+        } else if (post.status === 'draft' || post.status === 'scheduled') {
+            // For a post that isn't live, Ghost's URL is its private preview.
+            addLink('Open preview', () => window.open(post.url));
+        }
+        addLink('Edit in Ghost', () => window.open(editorUrl(this.settings.ghostUrl, post.id)));
+
+        new Notice(fragment, 12000);
+    }
+
+    /**
+     * Record the post in the note's frontmatter: its id/url/updated_at (so
+     * future publishes update the same post and sync can detect server-side
+     * changes), plus the values confirmed in the publish window, so the next
+     * update starts from them instead of reverting to old frontmatter.
+     */
+    private async writePostRef(file: TFile, result: PublishResult): Promise<void> {
+        const { post, values } = result;
         try {
             await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
                 fm[FRONTMATTER_KEYS.id] = post.id;
                 fm[FRONTMATTER_KEYS.url] = post.url;
                 fm[FRONTMATTER_KEYS.updatedAt] = post.updated_at;
+                fm.status = post.status;
+
+                // Only add a property the note didn't have when it says
+                // something; always refresh one that is already there.
+                if ('title' in fm || post.title !== file.basename) {
+                    fm.title = post.title;
+                }
+                if ('tags' in fm || values.tags.length > 0) {
+                    fm.tags = values.tags;
+                }
+                if (post.visibility && ('visibility' in fm || post.visibility !== 'public')) {
+                    fm.visibility = post.visibility;
+                }
+                if ('excerpt' in fm || values.excerpt.trim() !== '') {
+                    fm.excerpt = values.excerpt.trim();
+                }
+                if ('slug' in fm) {
+                    fm.slug = post.slug;
+                }
+                if ('featured' in fm) {
+                    fm.featured = values.featured;
+                }
             });
         } catch (error) {
             new Notice(`Published, but failed to update frontmatter: ${error instanceof Error ? error.message : 'Unknown error'}`);
         }
+    }
+
+    /**
+     * Fingerprint the note body as it is now, so we can later tell whether it
+     * has been edited since it was last sent to (or pulled from) Ghost.
+     */
+    private async rememberPushed(file: TFile, postId: string): Promise<void> {
+        try {
+            this.cache.pushed[postId] = this.fingerprint(await this.app.vault.read(file));
+            await this.saveCache();
+        } catch {
+            // Not being able to record this only affects the sync indicator
+        }
+    }
+
+    private fingerprint(content: string): string {
+        return hashContent(stripFrontmatter(content).content.trim());
     }
 
     /**
@@ -300,8 +476,7 @@ export default class GhostyPostyPlugin extends Plugin {
             return;
         }
 
-        const api = new GhostAPI(this.settings.ghostUrl, this.settings.apiKey);
-        const result = await api.getPost(ref.id);
+        const result = await this.createApi().getPost(ref.id, true);
         if (!result.success) {
             new Notice(`Failed to fetch post from Ghost: ${result.error}`);
             return;
@@ -341,6 +516,7 @@ export default class GhostyPostyPlugin extends Plugin {
                 }
             });
 
+            await this.rememberPushed(file, post.id);
             new Notice('Synced from Ghost');
         } catch (error) {
             new Notice(`Failed to sync: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -348,14 +524,15 @@ export default class GhostyPostyPlugin extends Plugin {
     }
 
     /**
-     * Archive the note by moving it to the configured archive folder
+     * Archive the note by moving it to the configured archive folder.
+     * Returns the folder it was moved to, or undefined if it wasn't moved.
      */
-    private async archiveNote(file: TFile): Promise<void> {
+    private async archiveNote(file: TFile): Promise<string | undefined> {
         const archiveFolder = this.settings.archiveFolder;
 
-        // Skip if no archive folder is configured
-        if (!archiveFolder) {
-            return;
+        // Skip if no archive folder is configured, or the note is already there
+        if (!archiveFolder || file.parent?.path === archiveFolder) {
+            return undefined;
         }
 
         try {
@@ -379,9 +556,10 @@ export default class GhostyPostyPlugin extends Plugin {
 
             // Move the file using fileManager to update links automatically
             await this.app.fileManager.renameFile(file, newPath);
-            new Notice(`Note archived to ${archiveFolder}`);
+            return archiveFolder;
         } catch (error) {
             new Notice(`Failed to archive note: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            return undefined;
         }
     }
 }

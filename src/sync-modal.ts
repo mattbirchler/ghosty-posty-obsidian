@@ -25,7 +25,7 @@ export class SyncModal extends Modal {
 
         contentEl.createEl('h2', { text: 'Sync from Ghost' });
 
-        const info = contentEl.createDiv({ cls: 'ghosty-posty-images' });
+        const info = contentEl.createDiv({ cls: 'ghosty-posty-details' });
 
         const titleField = info.createDiv({ cls: 'ghosty-posty-field' });
         titleField.createEl('strong', { text: 'Post: ' });
@@ -41,8 +41,8 @@ export class SyncModal extends Modal {
 
         const changedOnServer = this.lastSeenUpdatedAt !== undefined && this.lastSeenUpdatedAt !== this.post.updated_at;
 
-        const warning = contentEl.createDiv({ cls: 'ghosty-posty-warnings' });
-        warning.createEl('h3', { text: 'Heads up' });
+        const warning = contentEl.createDiv({ cls: 'ghosty-posty-callout is-warning' });
+        warning.createDiv({ text: 'Before you sync' });
         const list = warning.createEl('ul');
         list.createEl('li', {
             text: 'This replaces the note’s content with the version currently on Ghost. Any unsaved local edits to the body will be lost.'

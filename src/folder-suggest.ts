@@ -1,8 +1,8 @@
 import { AbstractInputSuggest, App, TFolder } from 'obsidian';
 
 export class FolderSuggest extends AbstractInputSuggest<TFolder> {
-    constructor(app: App, inputEl: HTMLInputElement) {
-        super(app, inputEl);
+    constructor(app: App, private textInputEl: HTMLInputElement) {
+        super(app, textInputEl);
     }
 
     getSuggestions(inputStr: string): TFolder[] {
@@ -31,9 +31,8 @@ export class FolderSuggest extends AbstractInputSuggest<TFolder> {
     }
 
     selectSuggestion(folder: TFolder): void {
-        const inputEl = this.inputEl as HTMLInputElement;
-        inputEl.value = folder.path;
-        inputEl.trigger('input');
+        this.textInputEl.value = folder.path;
+        this.textInputEl.trigger('input');
         this.close();
     }
 }

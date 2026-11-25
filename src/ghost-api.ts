@@ -251,10 +251,10 @@ export class GhostAPI {
     }
 
     /**
-     * List the site's active newsletters (for the delivery picker).
-     * Returns an empty list on failure so callers can degrade gracefully.
+     * List the site's active newsletters (for the delivery picker), with
+     * subscriber counts where Ghost provides them.
      */
-    async getNewsletters(): Promise<GhostNewsletter[]> {
+    async getNewsletters(): Promise<{ success: true; newsletters: GhostNewsletter[] } | { success: false }> {
         try {
             // count.active_members gives the subscriber count shown before sending.
             // If a Ghost version doesn't return it, the count is simply omitted.
@@ -264,28 +264,28 @@ export class GhostAPI {
             );
             if (response.status >= 200 && response.status < 300) {
                 const data = safeJson(response) as GhostNewslettersResponse | undefined;
-                return data?.newsletters ?? [];
+                return { success: true, newsletters: data?.newsletters ?? [] };
             }
-            return [];
+            return { success: false };
         } catch {
-            return [];
+            return { success: false };
         }
     }
 
     /**
      * List the names of every tag on the site (for tag autocomplete).
-     * Returns an empty list on failure so the tag field still works as free text.
      */
-    async getTags(): Promise<string[]> {
+    async getTags(): Promise<{ success: true; tags: string[] } | { success: false }> {
         try {
             const response = await this.request('GET', '/tags/?limit=all&fields=name&order=name%20asc');
             if (response.status >= 200 && response.status < 300) {
                 const data = safeJson(response) as GhostTagsResponse | undefined;
-                return (data?.tags ?? []).map((t) => t.name).filter((n) => typeof n === 'string' && n !== '');
+                const tags = (data?.tags ?? []).map((t) => t.name).filter((n) => typeof n === 'string' && n !== '');
+                return { success: true, tags };
             }
-            return [];
+            return { success: false };
         } catch {
-            return [];
+            return { success: false };
         }
     }
 
