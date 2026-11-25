@@ -1,7 +1,7 @@
 import { Marked } from 'marked';
 import { markedEmoji } from 'marked-emoji';
 import { gemoji } from 'gemoji';
-import { ImageReference } from './types';
+import { ImageReference, VideoInfo } from './types';
 
 /**
  * Escape a string for safe use inside a double-quoted HTML attribute
@@ -71,9 +71,44 @@ function isLocalPath(path: string): boolean {
 
 const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'];
 
+/** Video files Obsidian can embed. Ghost accepts only some of them. */
+const VIDEO_EXTENSIONS = ['mp4', 'webm', 'ogv', 'mov', 'm4v', 'mkv'];
+
+/** Video formats Ghost accepts for upload. */
+export const GHOST_VIDEO_EXTENSIONS = ['mp4', 'webm', 'ogv'];
+
+function extensionOf(path: string): string {
+    return path.split('.').pop()?.toLowerCase() || '';
+}
+
 function isImagePath(path: string): boolean {
-    const ext = path.split('.').pop()?.toLowerCase() || '';
-    return IMAGE_EXTENSIONS.includes(ext);
+    return IMAGE_EXTENSIONS.includes(extensionOf(path));
+}
+
+export function isVideoPath(path: string): boolean {
+    return VIDEO_EXTENSIONS.includes(extensionOf(path));
+}
+
+function videoPlaceholder(path: string): string {
+    return `<!--ghosty-video:${encodeURIComponent(path)}-->`;
+}
+
+/**
+ * Pull local videos out of the markdown, in either ![[clip.mp4]] or
+ * ![](clip.mp4) form. Each is replaced by a placeholder on its own line,
+ * which becomes a Ghost video card once the file has been uploaded.
+ */
+function extractVideos(markdown: string, videos: ImageReference[]): string {
+    const place = (original: string, path: string, alt: string | undefined, isEmbed: boolean): string => {
+        videos.push({ originalSyntax: original, path, alt: cleanAltText(alt), isEmbed, isFirstLine: false });
+        return `\n\n${videoPlaceholder(path)}\n\n`;
+    };
+
+    return markdown
+        .replace(/!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (match: string, path: string, alt: string | undefined) =>
+            isVideoPath(path) ? place(match, path.trim(), alt, true) : match)
+        .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match: string, alt: string, path: string) =>
+            isLocalPath(path) && isVideoPath(path) ? place(match, path, alt, false) : match);
 }
 
 /**
@@ -181,7 +216,7 @@ function extractAllImages(content: string): ImageReference[] {
     let match;
     while ((match = markdownImageRegex.exec(content)) !== null) {
         const path = match[2];
-        if (isLocalPath(path)) {
+        if (isLocalPath(path) && !isVideoPath(path)) {
             images.push({
                 originalSyntax: match[0],
                 path: path,
@@ -254,6 +289,8 @@ export interface ConversionResult {
     warnings: string[];
     images: ImageReference[];
     featuredImage: ImageReference | null;
+    /** Local videos, to be uploaded and shown as Ghost video cards. */
+    videos: ImageReference[];
 }
 
 /**
@@ -264,6 +301,10 @@ export function convertMarkdownToHtml(markdown: string): ConversionResult {
 
     // Drop frontmatter and private comments before anything else looks at the note
     let processed = stripComments(stripFrontmatter(markdown).content);
+
+    // Swap local videos for placeholders before images are looked for
+    const videos: ImageReference[] = [];
+    processed = extractVideos(processed, videos);
 
     // Extract all images first
     const allImages = extractAllImages(processed);
@@ -303,8 +344,8 @@ export function convertMarkdownToHtml(markdown: string): ConversionResult {
         const names = skippedEmbeds.join(', ');
         warnings.push(
             skippedEmbeds.length === 1
-                ? `An embed that is not an image was left out: ${names}`
-                : `${skippedEmbeds.length} embeds that are not images were left out: ${names}`
+                ? `An embed that is not an image or video was left out: ${names}`
+                : `${skippedEmbeds.length} embeds that are not images or videos were left out: ${names}`
         );
     }
 
@@ -318,7 +359,8 @@ export function convertMarkdownToHtml(markdown: string): ConversionResult {
         html,
         warnings,
         images: contentImages,
-        featuredImage
+        featuredImage,
+        videos
     };
 }
 
@@ -361,4 +403,43 @@ export function removeImages(html: string, paths: string[]): string {
 
     // Drop paragraphs left empty by the removal
     return result.replace(/<p>\s*<\/p>\n?/g, '');
+}
+
+function formatDuration(seconds: number): string {
+    const total = Math.max(0, Math.round(seconds));
+    return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+}
+
+/**
+ * Build the markup Ghost recognises as a video card when it imports HTML.
+ * This mirrors what Ghost's own editor produces: the importer reads the
+ * source, size, duration and thumbnail from exactly these elements.
+ */
+function videoCardHtml(video: VideoInfo): string {
+    const attr = escapeHtmlAttribute;
+    const thumbnail = video.thumbnailUrl ? ` data-kg-thumbnail="${attr(video.thumbnailUrl)}"` : '';
+    const size = video.width && video.height ? ` width="${video.width}" height="${video.height}"` : '';
+    const duration = video.duration !== undefined
+        ? `<div class="kg-video-duration">${formatDuration(video.duration)}</div>`
+        : '';
+    return `<figure class="kg-card kg-video-card kg-width-regular"${thumbnail}>` +
+        `<div class="kg-video-container"><video src="${attr(video.url)}"${size} playsinline preload="metadata"></video></div>` +
+        `${duration}</figure>`;
+}
+
+/**
+ * Replace each video placeholder with a Ghost video card. `lookup` returns
+ * the uploaded video for a local path, or undefined to leave the video out.
+ */
+export function renderVideos(html: string, lookup: (path: string) => VideoInfo | undefined): string {
+    return html.replace(/<!--ghosty-video:([^>]*?)-->\n?/g, (_match: string, encoded: string) => {
+        let path = encoded;
+        try {
+            path = decodeURIComponent(encoded);
+        } catch {
+            // Keep the raw value; it simply won't match an upload
+        }
+        const video = lookup(path);
+        return video ? `${videoCardHtml(video)}\n` : '';
+    });
 }

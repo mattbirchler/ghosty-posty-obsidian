@@ -318,6 +318,13 @@
     background: var(--background-modifier-border);
 }
 
+.ghosty-posty-image-thumb.is-video {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+}
+
 .ghosty-posty-image-thumb.is-missing {
     border: 1px dashed var(--text-error);
     background: transparent;
@@ -364,6 +371,7 @@
 }
 
 .ghosty-posty-image-state.is-missing,
+.ghosty-posty-image-state.is-unsupported,
 .ghosty-posty-image-state.is-failed {
     color: var(--text-error);
     font-weight: var(--font-semibold);

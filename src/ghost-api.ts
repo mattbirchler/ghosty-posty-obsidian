@@ -1,6 +1,6 @@
 import { requestUrl, RequestUrlResponse } from 'obsidian';
 import { describeGhostError } from './ghost-errors';
-import { GhostPostPayload, GhostPostResponse, GhostPostResult, GhostSiteResponse, GhostImageUploadResponse, GhostNewslettersResponse, GhostNewsletter, GhostTagsResponse } from './types';
+import { GhostPostPayload, GhostPostResponse, GhostPostResult, GhostSiteResponse, GhostImageUploadResponse, GhostMediaUploadResponse, GhostNewslettersResponse, GhostNewsletter, GhostTagsResponse } from './types';
 
 /** Options controlling how a create/update is delivered. */
 export interface PublishOptions {
@@ -111,6 +111,25 @@ async function generateGhostToken(apiKey: string): Promise<string> {
 
     return `${signatureInput}.${signature}`;
 }
+
+interface UploadPart {
+    field: string;
+    filename: string;
+    contentType: string;
+    data: ArrayBuffer;
+}
+
+const MIME_TYPES: Record<string, string> = {
+    'jpg': 'image/jpeg',
+    'jpeg': 'image/jpeg',
+    'png': 'image/png',
+    'gif': 'image/gif',
+    'webp': 'image/webp',
+    'svg': 'image/svg+xml',
+    'mp4': 'video/mp4',
+    'webm': 'video/webm',
+    'ogv': 'video/ogg'
+};
 
 export class GhostAPI {
     private ghostUrl: string;
@@ -309,79 +328,109 @@ export class GhostAPI {
     }
 
     /**
+     * POST files to an upload endpoint as multipart form data. Built by hand
+     * because Obsidian's request API has no FormData support on mobile.
+     */
+    private async postFiles(endpoint: string, parts: UploadPart[]): Promise<RequestUrlResponse> {
+        const token = await this.getAuthHeader();
+        const boundary = '----GhostyPostyBoundary' + Math.random().toString(36).substring(2);
+        const encoder = new TextEncoder();
+
+        const chunks: Uint8Array[] = [];
+        for (const part of parts) {
+            const safeName = part.filename.replace(/["\r\n]/g, '_');
+            chunks.push(encoder.encode(
+                `--${boundary}\r\nContent-Disposition: form-data; name="${part.field}"; filename="${safeName}"\r\nContent-Type: ${part.contentType}\r\n\r\n`
+            ));
+            chunks.push(new Uint8Array(part.data));
+            chunks.push(encoder.encode('\r\n'));
+        }
+        chunks.push(encoder.encode(`--${boundary}--\r\n`));
+
+        const body = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.length, 0));
+        let offset = 0;
+        for (const chunk of chunks) {
+            body.set(chunk, offset);
+            offset += chunk.length;
+        }
+
+        return requestUrl({
+            url: `${this.ghostUrl}/ghost/api/admin${endpoint}`,
+            method: 'POST',
+            throw: false,
+            headers: {
+                'Authorization': token,
+                'Content-Type': `multipart/form-data; boundary=${boundary}`
+            },
+            body: body.buffer
+        });
+    }
+
+    /**
      * Upload an image to Ghost
      */
     async uploadImage(filename: string, imageData: ArrayBuffer): Promise<{ success: true; url: string } | { success: false; error: string }> {
         try {
-            const token = await this.getAuthHeader();
-            const url = `${this.ghostUrl}/ghost/api/admin/images/upload/`;
-
-            // Determine content type from filename
             const ext = filename.split('.').pop()?.toLowerCase() || '';
-            const mimeTypes: Record<string, string> = {
-                'jpg': 'image/jpeg',
-                'jpeg': 'image/jpeg',
-                'png': 'image/png',
-                'gif': 'image/gif',
-                'webp': 'image/webp',
-                'svg': 'image/svg+xml',
-                'bmp': 'image/bmp'
-            };
-            const contentType = mimeTypes[ext] || 'application/octet-stream';
-
-            // Create multipart form data manually
-            const boundary = '----GhostyPostyBoundary' + Math.random().toString(36).substring(2);
-
-            // Build the multipart body
-            const header = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${contentType}\r\n\r\n`;
-            const footer = `\r\n--${boundary}--\r\n`;
-
-            // Convert header and footer to Uint8Array
-            const headerBytes = new TextEncoder().encode(header);
-            const footerBytes = new TextEncoder().encode(footer);
-            const imageBytes = new Uint8Array(imageData);
-
-            // Combine all parts
-            const body = new Uint8Array(headerBytes.length + imageBytes.length + footerBytes.length);
-            body.set(headerBytes, 0);
-            body.set(imageBytes, headerBytes.length);
-            body.set(footerBytes, headerBytes.length + imageBytes.length);
-
-            const response = await requestUrl({
-                url,
-                method: 'POST',
-                throw: false,
-                headers: {
-                    'Authorization': token,
-                    'Content-Type': `multipart/form-data; boundary=${boundary}`
-                },
-                body: body.buffer
-            });
+            const response = await this.postFiles('/images/upload/', [{
+                field: 'file',
+                filename,
+                contentType: MIME_TYPES[ext] || 'application/octet-stream',
+                data: imageData
+            }]);
 
             if (response.status >= 200 && response.status < 300) {
                 const data = safeJson(response) as GhostImageUploadResponse | undefined;
-                if (data?.images && data.images.length > 0) {
-                    return {
-                        success: true,
-                        url: data.images[0].url
-                    };
-                } else {
-                    return {
-                        success: false,
-                        error: 'No image URL returned from Ghost'
-                    };
-                }
-            } else {
-                return {
-                    success: false,
-                    error: describeGhostError(response.status, safeJson(response))
-                };
+                const url = data?.images?.[0]?.url;
+                return url ? { success: true, url } : { success: false, error: 'No image URL returned from Ghost' };
             }
+            return { success: false, error: describeGhostError(response.status, safeJson(response)) };
         } catch (error) {
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : 'Unknown error'
-            };
+            return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+        }
+    }
+
+    /**
+     * Upload a video to Ghost, with an optional JPEG thumbnail that Ghost
+     * shows before the video plays and in emails.
+     */
+    async uploadVideo(
+        filename: string,
+        videoData: ArrayBuffer,
+        thumbnail?: ArrayBuffer
+    ): Promise<{ success: true; url: string; thumbnailUrl?: string } | { success: false; error: string }> {
+        try {
+            const ext = filename.split('.').pop()?.toLowerCase() || '';
+            const parts: UploadPart[] = [{
+                field: 'file',
+                filename,
+                contentType: MIME_TYPES[ext] || 'application/octet-stream',
+                data: videoData
+            }];
+            if (thumbnail) {
+                parts.push({
+                    field: 'thumbnail',
+                    filename: `${filename.replace(/\.[^.]+$/, '')}_thumb.jpg`,
+                    contentType: 'image/jpeg',
+                    data: thumbnail
+                });
+            }
+
+            const response = await this.postFiles('/media/upload/', parts);
+
+            if (response.status >= 200 && response.status < 300) {
+                const data = safeJson(response) as GhostMediaUploadResponse | undefined;
+                const media = data?.media?.[0];
+                return media?.url
+                    ? { success: true, url: media.url, thumbnailUrl: media.thumbnail_url || undefined }
+                    : { success: false, error: 'No video URL returned from Ghost' };
+            }
+            if (response.status === 413) {
+                return { success: false, error: 'This video is larger than your Ghost site allows.' };
+            }
+            return { success: false, error: describeGhostError(response.status, safeJson(response)) };
+        } catch (error) {
+            return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
         }
     }
 }

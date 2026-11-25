@@ -92,6 +92,25 @@ export interface GhostPost {
     updated_at?: string;
 }
 
+/** What Ghost needs to show an uploaded video as a video card. */
+export interface VideoInfo {
+    url: string;
+    thumbnailUrl?: string;
+    width?: number;
+    height?: number;
+    /** Length in seconds. */
+    duration?: number;
+}
+
+export interface GhostMediaUploadResponse {
+    media: Array<{
+        url: string;
+        thumbnail_url?: string | null;
+        ref: string | null;
+    }>;
+}
+
+/** A local image or video referenced in a note. */
 export interface ImageReference {
     originalSyntax: string;
     path: string;

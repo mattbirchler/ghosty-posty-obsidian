@@ -17,7 +17,9 @@ class TagSuggest extends AbstractInputSuggest<string> {
 
     protected getSuggestions(query: string): string[] {
         const q = query.trim().toLowerCase();
-        const matches = this.candidates().filter((tag) => tag.toLowerCase().includes(q));
+        // Ghost's internal tags (#like-this) only show up when asked for
+        const matches = this.candidates().filter((tag) =>
+            tag.toLowerCase().includes(q) && (q.startsWith('#') || !tag.startsWith('#')));
         // Tags that start with what was typed come first
         return matches.sort((a, b) => {
             const aStarts = a.toLowerCase().startsWith(q) ? 0 : 1;

@@ -14,7 +14,7 @@ import { GhostyPostySettingTab } from './settings';
 import { PublishModal, PublishResult } from './publish-modal';
 import { SyncModal } from './sync-modal';
 import { GhostAPI } from './ghost-api';
-import { ImageMemory } from './image-list';
+import { ImageMemory, RememberedUpload } from './image-list';
 import { convertMarkdownToHtml, stripFrontmatter } from './markdown-converter';
 import { SyncState, editorUrl, hashContent, shouldArchive, statusBarText, successMessage } from './publish-logic';
 
@@ -25,8 +25,8 @@ import { SyncState, editorUrl, hashContent, shouldArchive, statusBarText, succes
 interface PluginCache {
     /** The Ghost site this cache belongs to; it is cleared if the URL changes. */
     site: string;
-    /** Vault image path -> where it lives on Ghost, valid while the file is unchanged. */
-    images: Record<string, { mtime: number; size: number; url: string }>;
+    /** Vault image or video path -> where it lives on Ghost, valid while the file is unchanged. */
+    images: Record<string, RememberedUpload & { mtime: number; size: number }>;
     /** Ghost post id -> fingerprint of the note body when it was last sent or synced. */
     pushed: Record<string, string>;
     newsletters: GhostNewsletter[];
@@ -47,10 +47,12 @@ export default class GhostyPostyPlugin extends Plugin {
     readonly imageMemory: ImageMemory = {
         lookup: (file) => {
             const entry = this.cache.images[file.path];
-            return entry && entry.mtime === file.stat.mtime && entry.size === file.stat.size ? entry.url : undefined;
+            return entry && entry.mtime === file.stat.mtime && entry.size === file.stat.size
+                ? { url: entry.url, video: entry.video }
+                : undefined;
         },
-        remember: (file, url) => {
-            this.cache.images[file.path] = { mtime: file.stat.mtime, size: file.stat.size, url };
+        remember: (file, upload) => {
+            this.cache.images[file.path] = { ...upload, mtime: file.stat.mtime, size: file.stat.size };
         }
     };
 

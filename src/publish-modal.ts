@@ -11,7 +11,7 @@ import {
     ServerPostStatus
 } from './types';
 import { GhostAPI, PublishOptions } from './ghost-api';
-import { ConversionResult, removeImages, replaceImageUrls } from './markdown-converter';
+import { ConversionResult, removeImages, renderVideos, replaceImageUrls } from './markdown-converter';
 import { ImageList } from './image-list';
 import { TagInput } from './tag-input';
 import {
@@ -203,7 +203,8 @@ export class PublishModal extends Modal {
             this.sourceFile,
             this.plugin.imageMemory,
             this.conversionResult.featuredImage,
-            this.conversionResult.images
+            this.conversionResult.images,
+            this.conversionResult.videos
         );
 
         this.mainEl.empty();
@@ -528,7 +529,7 @@ export class PublishModal extends Modal {
         // Overwriting web edits is destructive, so the button looks the part
         button.toggleClass('mod-warning', this.conflict && !this.busy);
         button.toggleClass('mod-cta', !this.conflict || this.busy);
-        button.disabled = this.busy || this.images.hasMissing;
+        button.disabled = this.busy || this.images.hasBlockers;
     }
 
     /**
@@ -545,21 +546,31 @@ export class PublishModal extends Modal {
         const problems = this.images.problems;
         if (problems.length > 0) {
             const callout = el.createDiv({ cls: 'ghosty-posty-callout is-error' });
-            const names = problems.map((p) => p.name).join(', ');
-            const missing = problems.every((p) => p.state === 'missing');
             const one = problems.length === 1;
+            const namesOf = (state: string) => problems.filter((p) => p.state === state).map((p) => p.name);
 
-            if (missing) {
-                callout.createDiv({ text: `${names} ${one ? 'is' : 'are'} not in your vault.` });
+            const missing = namesOf('missing');
+            if (missing.length > 0) {
+                callout.createDiv({ text: `${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} not in your vault.` });
+            }
+            const unsupported = namesOf('unsupported');
+            if (unsupported.length > 0) {
                 callout.createDiv({
-                    cls: 'ghosty-posty-callout-detail',
-                    text: `Fix the ${one ? 'path' : 'paths'} in the note and reopen this window, or publish without ${one ? 'it' : 'them'}.`
+                    text: `${unsupported.join(', ')} ${unsupported.length === 1 ? 'is in a video format' : 'are in video formats'} Ghost does not accept. Convert to MP4 to include ${unsupported.length === 1 ? 'it' : 'them'}.`
                 });
-            } else {
-                callout.createDiv({ text: `${names} could not be uploaded.` });
+            }
+            const failed = namesOf('failed');
+            if (failed.length > 0) {
+                callout.createDiv({ text: `${failed.join(', ')} could not be uploaded.` });
                 callout.createDiv({
                     cls: 'ghosty-posty-callout-detail',
-                    text: `${problems.find((p) => p.error)?.error ?? ''} The images that finished are kept, so a retry only sends what failed.`.trim()
+                    text: `${problems.find((p) => p.error)?.error ?? ''} The files that finished are kept, so a retry only sends what failed.`.trim()
+                });
+            }
+            if (missing.length > 0 || unsupported.length > 0) {
+                callout.createDiv({
+                    cls: 'ghosty-posty-callout-detail',
+                    text: `Fix the note and reopen this window, or publish without ${one ? 'it' : 'them'}.`
                 });
             }
 
@@ -726,7 +737,8 @@ export class PublishModal extends Modal {
             // 1. Images
             if (this.images.pendingCount > 0) {
                 const ok = await this.images.uploadAll(this.api, (done, total) => {
-                    this.setProgress(`Uploading images: ${done} of ${total} done`, total > 0 ? done / total : 1);
+                    const what = this.images.hasVideo ? 'files' : 'images';
+                    this.setProgress(`Uploading ${what}: ${done} of ${total} done`, total > 0 ? done / total : 1);
                 });
                 void this.plugin.saveCache();
                 if (!ok) {
@@ -779,6 +791,8 @@ export class PublishModal extends Modal {
 
         let html = replaceImageUrls(this.conversionResult.html, this.images.urlMap);
         html = removeImages(html, this.images.skippedPaths);
+        // Videos become Ghost video cards; any that were left out are dropped
+        html = renderVideos(html, (path) => this.images.videoFor(path));
 
         // An email-only post has no status to change, so leave it out.
         const sendStatus = this.serverPost?.status !== 'sent';

@@ -33,6 +33,13 @@ Publish your Obsidian notes directly to Ghost blogs with automatic image uploads
 - **Retry**: if an upload fails, the ones that finished are kept and a retry only sends what failed
 - **Featured image alt text**: alt text on the first-line image is sent to Ghost
 
+### Videos
+- **Local videos become Ghost video cards**: embed a video with `![[clip.mp4]]` or `![](clip.mp4)` and it is uploaded and shown with Ghost's own player
+- **Thumbnail included**: a frame from the video is uploaded as its thumbnail, which Ghost shows before playback and in emails
+- **Formats**: MP4, WebM and OGV, the formats Ghost accepts. Other formats (such as MOV) are flagged before you publish so you can convert them or leave them out.
+- **Listed with your images**: videos appear in the same list, with the same progress, upload memory and retry
+- Your Ghost site's own upload size limit applies. Audio and other file types are not uploaded.
+
 ### After Publishing
 - **Useful confirmation**: a notice that says what happened, with links to open the post (or preview a draft), copy its link, or edit it in Ghost
 - **Commands**: "Open post on Ghost", "Open in Ghost editor" and "Copy post link", also in the right-click menu
@@ -54,7 +61,7 @@ The plugin also writes `ghost_id`, `ghost_url` and `ghost_updated_at` to track t
 ### Obsidian Syntax
 - Comments (`%%like this%%`) are removed and never published
 - Image resize hints (`![[shot.png|400]]`) are not turned into alt text
-- Embeds that are not images (other notes, PDFs, video) are left out, and the publish window tells you
+- Embeds that are not images or videos (other notes, PDFs, audio) are left out, and the publish window tells you
 
 ### Archive After Publishing
 - **Optional Archive Folder**: Automatically move notes to a designated folder once they are on Ghost

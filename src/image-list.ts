@@ -1,12 +1,15 @@
-import { App, TFile, setTooltip } from 'obsidian';
+import { App, TFile, setIcon, setTooltip } from 'obsidian';
 import { GhostAPI } from './ghost-api';
 import { formatBytes } from './publish-logic';
-import { ImageReference } from './types';
+import { GHOST_VIDEO_EXTENSIONS } from './markdown-converter';
+import { probeVideo } from './video-probe';
+import { ImageReference, VideoInfo } from './types';
 
 export type ImageState =
     | 'ready'      // in the vault, will be uploaded
     | 'cached'     // unchanged since a previous upload, already on Ghost
     | 'missing'    // not found in the vault
+    | 'unsupported' // a video format Ghost does not accept
     | 'waiting'    // queued behind other uploads
     | 'uploading'
     | 'uploaded'
@@ -15,26 +18,36 @@ export type ImageState =
 
 interface ImageItem {
     ref: ImageReference;
+    kind: 'image' | 'video';
     featured: boolean;
     file: TFile | null;
     /** Ghost URL, once known (from the cache or a finished upload). */
     url?: string;
+    /** Thumbnail, size and length of an uploaded video. */
+    video?: Omit<VideoInfo, 'url'>;
     state: ImageState;
     error?: string;
     stateEl?: HTMLElement;
     metaEl?: HTMLElement;
 }
 
+/** An earlier upload of a file: where it is on Ghost, plus video details. */
+export interface RememberedUpload {
+    url: string;
+    video?: Omit<VideoInfo, 'url'>;
+}
+
 /** Lets the list reuse earlier uploads and record new ones. */
 export interface ImageMemory {
-    lookup(file: TFile): string | undefined;
-    remember(file: TFile, url: string): void;
+    lookup(file: TFile): RememberedUpload | undefined;
+    remember(file: TFile, upload: RememberedUpload): void;
 }
 
 const STATE_LABELS: Record<ImageState, string> = {
     ready: 'Ready',
     cached: 'On Ghost',
     missing: 'File not found',
+    unsupported: 'Not supported',
     waiting: 'Waiting',
     uploading: 'Uploading',
     uploaded: 'Uploaded',
@@ -46,7 +59,7 @@ const STATE_LABELS: Record<ImageState, string> = {
 const UPLOAD_CONCURRENCY = 3;
 
 /**
- * The list of images in the publish modal. It checks every image when the
+ * The list of images and videos in the publish modal. It checks every image when the
  * modal opens (so a missing file shows up before publishing, not halfway
  * through), shows each one with a thumbnail and size, and tracks its state
  * through the upload.
@@ -60,29 +73,45 @@ export class ImageList {
         private sourceFile: TFile,
         private memory: ImageMemory,
         featuredImage: ImageReference | null,
-        contentImages: ImageReference[]
+        contentImages: ImageReference[],
+        videos: ImageReference[]
     ) {
         const refs = [
-            ...(featuredImage ? [{ ref: featuredImage, featured: true }] : []),
-            ...contentImages.map((ref) => ({ ref, featured: false }))
+            ...(featuredImage ? [{ ref: featuredImage, featured: true, kind: 'image' as const }] : []),
+            ...contentImages.map((ref) => ({ ref, featured: false, kind: 'image' as const })),
+            ...videos.map((ref) => ({ ref, featured: false, kind: 'video' as const }))
         ];
 
         // The same file can appear more than once in a note; upload it once.
         const seen = new Set<string>();
-        for (const { ref, featured } of refs) {
+        for (const { ref, featured, kind } of refs) {
             if (seen.has(ref.path)) {
                 continue;
             }
             seen.add(ref.path);
 
             const file = this.resolve(ref.path);
-            const url = file ? this.memory.lookup(file) : undefined;
+            const remembered = file ? this.memory.lookup(file) : undefined;
+            const unsupported = kind === 'video' && file !== null &&
+                !GHOST_VIDEO_EXTENSIONS.includes(file.extension.toLowerCase());
+
+            let state: ImageState = 'ready';
+            if (!file) {
+                state = 'missing';
+            } else if (unsupported) {
+                state = 'unsupported';
+            } else if (remembered) {
+                state = 'cached';
+            }
+
             this.items.push({
                 ref,
+                kind,
                 featured,
                 file,
-                url,
-                state: !file ? 'missing' : url ? 'cached' : 'ready'
+                url: unsupported ? undefined : remembered?.url,
+                video: unsupported ? undefined : remembered?.video,
+                state
             });
         }
     }
@@ -91,15 +120,23 @@ export class ImageList {
         return this.items.length;
     }
 
-    /** Images that stop a publish: not in the vault, or failed to upload. */
+    /**
+     * Files that stop a publish: not in the vault, a video format Ghost
+     * doesn't accept, or a failed upload.
+     */
     get problems(): Array<{ name: string; state: ImageState; error?: string }> {
         return this.items
-            .filter((item) => item.state === 'missing' || item.state === 'failed')
+            .filter((item) => item.state === 'missing' || item.state === 'unsupported' || item.state === 'failed')
             .map((item) => ({ name: this.displayName(item), state: item.state, error: item.error }));
     }
 
-    get hasMissing(): boolean {
-        return this.items.some((item) => item.state === 'missing');
+    /** Problems that a retry can't fix: the user has to decide what to do. */
+    get hasBlockers(): boolean {
+        return this.items.some((item) => item.state === 'missing' || item.state === 'unsupported');
+    }
+
+    get hasVideo(): boolean {
+        return this.items.some((item) => item.kind === 'video');
     }
 
     get hasFailed(): boolean {
@@ -115,7 +152,7 @@ export class ImageList {
     get urlMap(): Map<string, string> {
         const map = new Map<string, string>();
         for (const item of this.items) {
-            if (item.url) {
+            if (item.url && item.kind === 'image') {
                 map.set(item.ref.path, item.url);
             }
         }
@@ -124,7 +161,15 @@ export class ImageList {
 
     /** Local paths of images the user chose to leave out. */
     get skippedPaths(): string[] {
-        return this.items.filter((item) => item.state === 'skipped').map((item) => item.ref.path);
+        return this.items
+            .filter((item) => item.state === 'skipped' && item.kind === 'image')
+            .map((item) => item.ref.path);
+    }
+
+    /** The uploaded video for a local path, or undefined if it was left out. */
+    videoFor(path: string): VideoInfo | undefined {
+        const item = this.items.find((i) => i.kind === 'video' && i.ref.path === path);
+        return item?.url ? { url: item.url, ...item.video } : undefined;
     }
 
     /** The featured image's Ghost URL and alt text, if it has been uploaded. */
@@ -145,7 +190,9 @@ export class ImageList {
         for (const item of this.items) {
             const row = listEl.createDiv({ cls: 'ghosty-posty-image' });
 
-            if (item.file) {
+            if (item.kind === 'video') {
+                setIcon(row.createDiv({ cls: 'ghosty-posty-image-thumb is-video' }), 'film');
+            } else if (item.file) {
                 const thumb = row.createEl('img', { cls: 'ghosty-posty-image-thumb' });
                 thumb.src = this.app.vault.getResourcePath(item.file);
                 thumb.alt = '';
@@ -170,7 +217,7 @@ export class ImageList {
      */
     skipProblems(): void {
         for (const item of this.items) {
-            if (item.state === 'missing' || item.state === 'failed') {
+            if (item.state === 'missing' || item.state === 'unsupported' || item.state === 'failed') {
                 this.setState(item, 'skipped');
             }
         }
@@ -221,14 +268,31 @@ export class ImageList {
             return;
         }
 
-        const result = await api.uploadImage(file.name, data);
-        if (!result.success) {
-            this.setState(item, 'failed', result.error);
-            return;
+        if (item.kind === 'video') {
+            // Work out the size and grab a thumbnail frame, as Ghost's editor does
+            const probe = await probeVideo(data, `video/${file.extension.toLowerCase() === 'ogv' ? 'ogg' : file.extension.toLowerCase()}`);
+            const result = await api.uploadVideo(file.name, data, probe.thumbnail);
+            if (!result.success) {
+                this.setState(item, 'failed', result.error);
+                return;
+            }
+            item.url = result.url;
+            item.video = {
+                thumbnailUrl: result.thumbnailUrl,
+                width: probe.width,
+                height: probe.height,
+                duration: probe.duration
+            };
+        } else {
+            const result = await api.uploadImage(file.name, data);
+            if (!result.success) {
+                this.setState(item, 'failed', result.error);
+                return;
+            }
+            item.url = result.url;
         }
 
-        item.url = result.url;
-        this.memory.remember(file, result.url);
+        this.memory.remember(file, { url: item.url, video: item.video });
         this.setState(item, 'uploaded');
     }
 
@@ -249,15 +313,23 @@ export class ImageList {
             if (item.featured) {
                 parts.push('Featured image');
             }
+            if (item.kind === 'video') {
+                parts.push('Video');
+            }
             if (item.error) {
                 parts.push(item.error);
+            } else if (item.state === 'unsupported') {
+                parts.push('Ghost accepts MP4, WebM and OGV video');
             } else if (item.file) {
                 parts.push(formatBytes(item.file.stat.size));
             } else {
                 parts.push(item.ref.path);
             }
             item.metaEl.setText(parts.join(' · '));
-            item.metaEl.toggleClass('is-error', item.error !== undefined || item.state === 'missing');
+            item.metaEl.toggleClass(
+                'is-error',
+                item.error !== undefined || item.state === 'missing' || item.state === 'unsupported'
+            );
         }
     }
 
@@ -265,15 +337,23 @@ export class ImageList {
         if (!this.summaryEl) {
             return;
         }
-        const total = this.items.length;
+        const videos = this.items.filter((i) => i.kind === 'video').length;
+        const images = this.items.length - videos;
         const onGhost = this.items.filter((i) => i.url !== undefined).length;
         const missing = this.items.filter((i) => i.state === 'missing').length;
         const skipped = this.items.filter((i) => i.state === 'skipped').length;
         const toUpload = this.items
-            .filter((i) => i.file && i.url === undefined && i.state !== 'skipped')
+            .filter((i) => i.file && i.url === undefined && i.state !== 'skipped' && i.state !== 'unsupported')
             .reduce((sum, i) => sum + (i.file?.stat.size ?? 0), 0);
 
-        const parts = [`${total} ${total === 1 ? 'image' : 'images'}`];
+        const counts: string[] = [];
+        if (images > 0) {
+            counts.push(`${images} ${images === 1 ? 'image' : 'images'}`);
+        }
+        if (videos > 0) {
+            counts.push(`${videos} ${videos === 1 ? 'video' : 'videos'}`);
+        }
+        const parts = [counts.join(', ')];
         if (onGhost > 0) {
             parts.push(`${onGhost} already on Ghost`);
         }
@@ -282,6 +362,10 @@ export class ImageList {
         }
         if (missing > 0) {
             parts.push(`${missing} missing`);
+        }
+        const unsupported = this.items.filter((i) => i.state === 'unsupported').length;
+        if (unsupported > 0) {
+            parts.push(`${unsupported} not supported`);
         }
         if (skipped > 0) {
             parts.push(`${skipped} left out`);
