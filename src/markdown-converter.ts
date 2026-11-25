@@ -50,7 +50,7 @@ const markdownConverter = createConverter();
  * Remove YAML frontmatter from markdown content
  * Returns the content without frontmatter and the frontmatter end position
  */
-function stripFrontmatter(markdown: string): { content: string; frontmatterEndIndex: number } {
+export function stripFrontmatter(markdown: string): { content: string; frontmatterEndIndex: number } {
     const frontmatterRegex = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/;
     const match = markdown.match(frontmatterRegex);
     if (match) {
